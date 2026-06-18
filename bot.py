@@ -28,6 +28,8 @@ ACTIVE_FILE = "active.json"
 
 def load_vc_pool():
     if not os.path.exists(VC_FILE):
+        # Create empty file if missing
+        save_vc_pool([])
         return []
     with open(VC_FILE, "r") as f:
         data = json.load(f)
@@ -65,9 +67,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.command(name="purge")
 @commands.has_permissions(manage_messages=True)
 async def purge(ctx, amount: int = None):
-    """Delete messages in the channel (Admin only). Usage: !purge 50"""
     if amount is None:
-        await ctx.send("❌ Please specify a number of messages to delete. Example: `!purge 50`", delete_after=5)
+        await ctx.send("❌ Please specify a number of messages. Example: `!purge 50`", delete_after=5)
         return
     if amount < 1:
         await ctx.send("❌ Amount must be at least 1.", delete_after=5)
@@ -88,7 +89,6 @@ async def purge(ctx, amount: int = None):
 @bot.command(name="nuke")
 @commands.has_permissions(manage_messages=True)
 async def nuke(ctx):
-    """Delete ALL messages in the channel (Admin only)."""
     try:
         await ctx.send("⚠️ Nuking channel... this will delete ALL messages!", delete_after=3)
         deleted = await ctx.channel.purge(limit=10000)
@@ -112,6 +112,21 @@ def validate_expiry(expiry: str) -> bool:
 
 def validate_cvv(cvv: str) -> bool:
     return cvv.isdigit() and len(cvv) == 3
+
+# ----- Clear All Confirmation Modal -----
+class ClearConfirmModal(ui.Modal, title="🧹 Clear All Cards"):
+    confirm = ui.TextInput(
+        label="Type 'CONFIRM' to delete all cards",
+        placeholder="CONFIRM",
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if self.confirm.value.strip().upper() == "CONFIRM":
+            save_vc_pool([])
+            await interaction.response.send_message("🧹 **All cards have been cleared.**", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Clear cancelled – you must type 'CONFIRM'.", ephemeral=True)
 
 # ----- Admin VC Management Panel -----
 class VCPanelView(ui.View):
@@ -145,13 +160,17 @@ class VCPanelView(ui.View):
         modal = RemoveCardModal()
         await interaction.response.send_modal(modal)
 
+    @ui.button(label="🧹 Clear All Cards", style=discord.ButtonStyle.danger, emoji="🧹", row=1)
+    async def clear_all(self, interaction: discord.Interaction, button: ui.Button):
+        modal = ClearConfirmModal()
+        await interaction.response.send_modal(modal)
+
 class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
     card_number = ui.TextInput(label="Card Number (max 19 digits)", placeholder="4111111111111111", required=True, max_length=19)
     expiry = ui.TextInput(label="Expiry Date (MM/YY)", placeholder="11/30", required=True, max_length=5)
     cvv = ui.TextInput(label="CVV (3 digits)", placeholder="123", required=True, max_length=3)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Validate inputs
         if not validate_card(self.card_number.value):
             await interaction.response.send_message("❌ Invalid card number – must be digits only, max 19 characters.", ephemeral=True)
             return
