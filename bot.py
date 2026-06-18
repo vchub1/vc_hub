@@ -179,18 +179,14 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
     email = ui.TextInput(label="Your PayPal Email", placeholder="The email you'll use to pay", required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Generate a unique ID for this purchase
         purchase_id = f"{interaction.user.id}-{secrets.token_hex(4)}"
-        
-        # Store the user's email and Discord ID
         pending = load_pending()
         pending[purchase_id] = {
             "user_id": interaction.user.id,
-            "payer_email": self.email.value.strip().lower()  # Store email for matching
+            "payer_email": self.email.value.strip().lower()
         }
         save_pending(pending)
 
-        # Extract username for PayPal.me link
         paypal_username = PAYPAL_EMAIL.split('@')[0]
 
         embed = discord.Embed(
@@ -205,7 +201,7 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
         embed.set_footer(text="Make sure you send from the email you just entered.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ----- Flask IPN Server (Auto-dispense by email match) -----
+# ----- Flask IPN Server -----
 app_flask = Flask(__name__)
 
 @app_flask.route("/test", methods=["GET"])
@@ -240,18 +236,18 @@ def ipn():
         print("✅ IPN verified")
         if payment_status == "Completed":
             print("✅ Payment Completed")
-            
-            # Check pending list for matching email
+
+            # Try to match by email
             pending = load_pending()
             matched_purchase_id = None
             matched_user_id = None
-            
+
             for purchase_id, data in pending.items():
-                if data.get("payer_email") == payer_email:
+                if data.get("payer_email", "").strip().lower() == payer_email:
                     matched_purchase_id = purchase_id
                     matched_user_id = data.get("user_id")
                     break
-            
+
             if matched_purchase_id and matched_user_id:
                 print(f"✅ Found matching email: {payer_email} -> User {matched_user_id}")
                 del pending[matched_purchase_id]
@@ -260,12 +256,28 @@ def ipn():
                 return "OK", 200
             else:
                 print(f"❌ No pending purchase found for email: {payer_email}")
-                return "Email not found", 404
+                print("📌 Sending manual approval request to admin channel...")
+                # Send manual approval to admin channel
+                admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
+                if admin_channel:
+                    embed = discord.Embed(
+                        title="⚠️ Unmatched Payment – Manual Review Needed",
+                        description=(
+                            f"**Payer Email:** {payer_email}\n"
+                            f"**Transaction ID:** {txn_id}\n"
+                            f"**Status:** Completed\n"
+                            f"**This payment didn't match any pending purchase.**\n\n"
+                            f"Please check your PayPal and manually dispense a card to this user if valid."
+                        ),
+                        color=discord.Color.orange()
+                    )
+                    await admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed)
+                return "OK - Unmatched", 200
         else:
             print(f"📌 Status: {payment_status} – not dispensing")
             return f"OK - {payment_status}", 200
     else:
-        print("❌ Verification failed")
+        print("❌ IPN verification failed")
         return "Verification failed", 400
 
 def run_flask():
