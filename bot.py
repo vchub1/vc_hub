@@ -90,16 +90,26 @@ intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ----- Helper to edit ephemeral followup -----
-async def edit_followup(token: str, msg_id: int, content: str, embed=None):
+# ----- Helper: Generate progress embed -----
+def progress_embed(percent: int, title: str, description: str, color=discord.Color.blue()):
+    filled = int(percent / 10)  # 10 blocks total
+    bar = "🟩" * filled + "⬜" * (10 - filled)
+    embed = discord.Embed(
+        title=title,
+        description=f"{bar} **{percent}%**\n\n{description}",
+        color=color
+    )
+    embed.set_footer(text="Your card will be delivered automatically.")
+    return embed
+
+# ----- Helper to edit ephemeral followup (with embed) -----
+async def edit_followup_embed(token: str, msg_id: int, embed: discord.Embed):
     url = f"https://discord.com/api/v10/webhooks/{bot.user.id}/{token}/messages/{msg_id}"
-    payload = {"content": content}
-    if embed:
-        payload["embeds"] = [embed.to_dict() if hasattr(embed, 'to_dict') else embed]
+    payload = {"embeds": [embed.to_dict()]}
     try:
         resp = requests.patch(url, json=payload)
         if resp.status_code == 200:
-            print("✅ Updated ephemeral followup")
+            print("✅ Updated ephemeral followup with embed")
         else:
             print(f"❌ Failed to update followup: {resp.status_code} - {resp.text}")
     except Exception as e:
@@ -340,7 +350,7 @@ async def setup_vcpanel(ctx):
     await ctx.send(embed=embed, view=VCPanelView())
     await ctx.message.delete()
 
-# ----- Dispense VC (with admin alert error handling) -----
+# ----- Dispense VC (with followup update) -----
 async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
     print(f"🔍 dispense_vc called: user_id={user_id}, token={'present' if token else 'None'}, msg_id={msg_id}")
     try:
@@ -406,15 +416,16 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
         }
         save_active(active)
 
+        # Update progress to 100%
         if token and msg_id:
-            print(f"🔄 Updating ephemeral followup with token {token[:10]}... and msg_id {msg_id}")
-            await edit_followup(
-                token,
-                msg_id,
-                "✅ **Thank you for your order!**\nPlease check your DMs for your card details."
+            embed = progress_embed(
+                100,
+                "✅ Card Delivered!",
+                "Your Virtual Card has been sent to your DMs.\n"
+                "Please check your messages and use the card within 2 hours.",
+                color=discord.Color.green()
             )
-        else:
-            print("⚠️ No token/msg_id – skipping ephemeral update")
+            await edit_followup_embed(token, msg_id, embed)
 
         # --- Admin channel alert (with error handling) ---
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
@@ -445,30 +456,20 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
         traceback.print_exc()
         return False
 
-# ----- Send unmatched alert -----
-async def send_unmatched_alert(payer_email: str, txn_id: str, amount: str):
-    admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
-    if admin_channel:
-        try:
-            embed = discord.Embed(
-                title="⚠️ Unmatched Payment – Manual Review",
-                description=(
-                    f"**Payer Email:** {payer_email}\n"
-                    f"**Transaction ID:** {txn_id}\n"
-                    f"**Amount:** £{amount}\n"
-                    f"**Status:** Completed\n"
-                    f"This payment didn't match any pending purchase."
-                ),
-                color=discord.Color.orange()
-            )
-            await admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed)
-        except:
-            pass
-
-# ----- Wrong amount handler -----
+# ----- Wrong amount handler with progress update -----
 async def handle_wrong_amount(user_id: int, payer_email: str, txn_id: str, amount: str, token: str = None, msg_id: int = None):
-    """Notify user and admin about wrong amount, remove pending entry."""
-    # Notify user via DM
+    # Update followup embed with error
+    if token and msg_id:
+        embed = discord.Embed(
+            title="❌ Payment Failed – Wrong Amount",
+            description=f"You sent **£{amount}** but the required amount is **£1.00**.\n\n"
+                        "Your purchase has been cancelled. Please try again with the correct amount.\n"
+                        "If you believe this is a mistake, contact support.",
+            color=discord.Color.red()
+        )
+        await edit_followup_embed(token, msg_id, embed)
+
+    # DM user
     try:
         user = await bot.fetch_user(user_id)
         if user:
@@ -486,16 +487,6 @@ async def handle_wrong_amount(user_id: int, payer_email: str, txn_id: str, amoun
     except:
         pass
 
-    # Update ephemeral followup if we have token and msg_id
-    if token and msg_id:
-        await edit_followup(
-            token,
-            msg_id,
-            "❌ **Payment Failed – Wrong Amount**\n"
-            f"You sent **£{amount}** but the required amount is **£1.00**.\n"
-            "Please try again with the correct amount."
-        )
-
     # Admin alert
     admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
     if admin_channel:
@@ -511,6 +502,26 @@ async def handle_wrong_amount(user_id: int, payer_email: str, txn_id: str, amoun
                     "Payment ignored and user notified."
                 ),
                 color=discord.Color.red()
+            )
+            await admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed)
+        except:
+            pass
+
+# ----- Send unmatched alert -----
+async def send_unmatched_alert(payer_email: str, txn_id: str, amount: str):
+    admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
+    if admin_channel:
+        try:
+            embed = discord.Embed(
+                title="⚠️ Unmatched Payment – Manual Review",
+                description=(
+                    f"**Payer Email:** {payer_email}\n"
+                    f"**Transaction ID:** {txn_id}\n"
+                    f"**Amount:** £{amount}\n"
+                    f"**Status:** Completed\n"
+                    f"This payment didn't match any pending purchase."
+                ),
+                color=discord.Color.orange()
             )
             await admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed)
         except:
@@ -601,16 +612,17 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
 
         await interaction.response.defer(ephemeral=True, thinking=False)
 
-        # No PayPal.me link – just show email and instructions
-        content = (
-            f"💳 **Complete Your Payment**\n\n"
-            f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
-            f"   - Copy this email and paste it into PayPal.\n"
-            f"   - **DO NOT use PayPal.me** – it doesn't work.\n"
-            f"**2.** After sending, this message will update automatically."
+        # Send initial progress embed (20%)
+        embed = progress_embed(
+            20,
+            "⏳ Step 1: Email Submitted",
+            "Your email has been recorded.\n\n"
+            f"**Send £1.00 to:** `{PAYPAL_EMAIL}`\n"
+            "Copy this email and paste it into PayPal.\n"
+            "**DO NOT use PayPal.me – it doesn't work reliably.**\n\n"
+            "Once payment is detected, this progress bar will update automatically."
         )
-
-        followup_msg = await interaction.followup.send(content=content, ephemeral=True)
+        followup_msg = await interaction.followup.send(embed=embed, ephemeral=True)
         print(f"📤 Sent followup: msg_id={followup_msg.id}, token={interaction.token[:20]}...")
 
         pending[purchase_id]["followup_msg_id"] = followup_msg.id
@@ -625,7 +637,6 @@ class StoreView(ui.View):
 
     @ui.button(label="💳 Purchase Virtual Card", style=discord.ButtonStyle.primary, emoji="✨", row=0)
     async def buy(self, interaction: discord.Interaction, button: ui.Button):
-        # Check if there are cards in stock
         cards = load_vc_pool()
         if not cards:
             await interaction.response.send_message(
@@ -633,7 +644,6 @@ class StoreView(ui.View):
                 ephemeral=True
             )
             return
-        # Show T&C
         embed = discord.Embed(
             title="📋 Terms & Conditions",
             description=(
@@ -650,26 +660,37 @@ class StoreView(ui.View):
         view = TermsView()
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @ui.button(label="ℹ️ How to Use", style=discord.ButtonStyle.secondary, emoji="📖", row=0)
+    @ui.button(label="📖 How to Use", style=discord.ButtonStyle.secondary, emoji="📖", row=0)
     async def how_to_use(self, interaction: discord.Interaction, button: ui.Button):
         embed = discord.Embed(
             title="📖 How to Purchase a Virtual Card",
             description=(
-                "Follow these steps to complete your purchase:\n\n"
-                "**1. Click the 'Purchase Virtual Card' button.**\n"
-                "**2. Read and agree to the Terms & Conditions.**\n"
-                "**3. Enter your PayPal email** – this **must match** the email you will use to send the payment.\n"
-                "**4. Send exactly £1.00** to the PayPal address shown.\n"
-                "   - Copy the email and paste it into PayPal.\n"
-                "   - **DO NOT use PayPal.me** – it doesn't work reliably.\n"
-                "   - **IMPORTANT:** If you send a different amount, your payment will be ignored and you will be notified.\n"
-                "**5. Once payment is confirmed**, the card will be sent to your DMs automatically.\n"
-                "**6. Use the card within 2 hours** – it will be terminated after that.\n\n"
-                "⚠️ **Please double-check your email and amount before sending!**"
+                "**Step-by-Step Guide:**\n\n"
+                "**1️⃣ Click the 'Purchase Virtual Card' button**\n"
+                "   – This starts the purchase process.\n\n"
+                "**2️⃣ Read and agree to the Terms & Conditions**\n"
+                "   – You must accept to continue.\n\n"
+                "**3️⃣ Enter your PayPal email**\n"
+                "   – This **must match** the email you'll use to send the payment.\n"
+                "   – If it doesn't match, the system won't recognise your payment.\n\n"
+                "**4️⃣ Send exactly £1.00 to the PayPal address shown**\n"
+                "   – Copy the email address provided and paste it into PayPal.\n"
+                "   – **IMPORTANT:** Do not use PayPal.me – it doesn't work reliably.\n"
+                "   – If you send the wrong amount, you'll be notified and asked to try again.\n\n"
+                "**5️⃣ Wait for automatic confirmation**\n"
+                "   – Once your payment is detected, the progress bar will update.\n"
+                "   – Your Virtual Card will be sent to your DMs instantly.\n\n"
+                "**6️⃣ Use the card within 2 hours**\n"
+                "   – The card will be terminated after that time.\n"
+                "   – You'll receive a reminder when it's about to expire.\n\n"
+                "⚠️ **Important Reminders:**\n"
+                "   • Double-check your email and amount before sending.\n"
+                "   • No chargebacks – they will result in action.\n"
+                "   • If you encounter any issues, contact support."
             ),
             color=discord.Color.blue()
         )
-        embed.set_footer(text="If you have issues, contact support.")
+        embed.set_footer(text="We're here to help – just ask!")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ----- Flask IPN Server -----
@@ -694,7 +715,6 @@ def ipn():
     print(f"🔑 Transaction ID: {txn_id}")
     print(f"🔑 Amount: {amount}")
 
-    # Verify IPN
     verify_url = "https://www.paypal.com/cgi-bin/webscr"
     verify_data = data.copy()
     verify_data["cmd"] = "_notify-validate"
@@ -708,14 +728,12 @@ def ipn():
     if resp.text == "VERIFIED":
         print("✅ IPN verified")
         if payment_status == "Completed":
-            # Check amount
             try:
                 amt = float(amount)
             except:
                 amt = 0.0
             if amt != 1.00:
                 print(f"⚠️ Amount is {amount}, not £1.00 – handling wrong amount.")
-                # Find the pending entry by email
                 pending = load_pending()
                 matched_user_id = None
                 token = None
@@ -725,7 +743,6 @@ def ipn():
                         matched_user_id = data.get("user_id")
                         token = data.get("followup_token")
                         msg_id = data.get("followup_msg_id")
-                        # Remove the pending entry
                         del pending[purchase_id]
                         save_pending(pending)
                         break
@@ -736,7 +753,7 @@ def ipn():
                     )
                 else:
                     asyncio.run_coroutine_threadsafe(
-                        send_wrong_amount_alert(payer_email, txn_id, amount),
+                        send_unmatched_alert(payer_email, txn_id, amount),
                         bot.loop
                     )
                 return f"OK - Wrong amount {amount}", 200
@@ -764,6 +781,21 @@ def ipn():
                 print(f"🔑 token: {token[:20] if token else 'None'}..., msg_id: {msg_id}")
                 del pending[matched_purchase_id]
                 save_pending(pending)
+
+                # Update progress to 50% (payment received)
+                if token and msg_id:
+                    embed = progress_embed(
+                        50,
+                        "💰 Payment Received!",
+                        "Your payment has been confirmed.\n"
+                        "We're now preparing your Virtual Card – please wait a moment.",
+                        color=discord.Color.blue()
+                    )
+                    asyncio.run_coroutine_threadsafe(
+                        edit_followup_embed(token, msg_id, embed),
+                        bot.loop
+                    )
+
                 asyncio.run_coroutine_threadsafe(dispense_vc(matched_user_id, token, msg_id), bot.loop)
                 return "OK", 200
             else:
