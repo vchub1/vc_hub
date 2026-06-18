@@ -10,6 +10,8 @@ import requests
 from flask import Flask, request
 import threading
 from dotenv import load_dotenv
+from pathlib import Path
+
 load_dotenv()
 
 # ---------- CONFIG ----------
@@ -24,14 +26,26 @@ VC_FILE = "vcs.json"
 PENDING_FILE = "pending.json"
 ACTIVE_FILE = "active.json"
 
-# ----------------------------
+# ----- Use absolute paths to avoid Railway file system issues -----
+BASE_DIR = Path(__file__).parent.absolute()
 
+def get_vc_file():
+    return os.path.join(BASE_DIR, VC_FILE)
+
+def get_pending_file():
+    return os.path.join(BASE_DIR, PENDING_FILE)
+
+def get_active_file():
+    return os.path.join(BASE_DIR, ACTIVE_FILE)
+
+# ----- File helpers with absolute paths -----
 def load_vc_pool():
-    if not os.path.exists(VC_FILE):
+    file_path = get_vc_file()
+    if not os.path.exists(file_path):
         save_vc_pool([])
         return []
     try:
-        with open(VC_FILE, "r") as f:
+        with open(file_path, "r") as f:
             data = json.load(f)
             cards = data.get("cards", [])
             original_len = len(cards)
@@ -44,25 +58,32 @@ def load_vc_pool():
         return []
 
 def save_vc_pool(cards):
-    with open(VC_FILE, "w") as f:
+    file_path = get_vc_file()
+    with open(file_path, "w") as f:
         json.dump({"cards": cards}, f, indent=4)
 
 def load_pending():
-    if not os.path.exists(PENDING_FILE): return {}
-    with open(PENDING_FILE, "r") as f:
+    file_path = get_pending_file()
+    if not os.path.exists(file_path):
+        return {}
+    with open(file_path, "r") as f:
         return json.load(f)
 
 def save_pending(data):
-    with open(PENDING_FILE, "w") as f:
+    file_path = get_pending_file()
+    with open(file_path, "w") as f:
         json.dump(data, f, indent=4)
 
 def load_active():
-    if not os.path.exists(ACTIVE_FILE): return {}
-    with open(ACTIVE_FILE, "r") as f:
+    file_path = get_active_file()
+    if not os.path.exists(file_path):
+        return {}
+    with open(file_path, "r") as f:
         return json.load(f)
 
 def save_active(data):
-    with open(ACTIVE_FILE, "w") as f:
+    file_path = get_active_file()
+    with open(file_path, "w") as f:
         json.dump(data, f, indent=4)
 
 # ----- Discord Bot Setup -----
@@ -612,6 +633,8 @@ def ipn():
             print("✅ Payment Completed & Amount verified")
 
             pending = load_pending()
+            print(f"📋 Pending file contents: {pending}")  # Debug log
+
             matched_purchase_id = None
             matched_user_id = None
             token = None
