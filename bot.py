@@ -326,14 +326,18 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
     print(f"🔍 dispense_vc called: user_id={user_id}, token={'present' if token else 'None'}, msg_id={msg_id}")
     try:
         cards = load_vc_pool()
+        print(f"📊 Cards loaded: {len(cards)} cards in stock")
+        
         if not cards:
             admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
             if admin_channel:
                 await admin_channel.send("🚨 **No VCs left!** Use `!setup_vcpanel` to add more.")
+            print("❌ No cards in stock – cannot dispense")
             return False
 
         vc_data = cards.pop(0)
         save_vc_pool(cards)
+        print(f"💳 Dispensing card: {vc_data['card']}")
 
         expiry_time = datetime.now(UTC) + timedelta(hours=2)
         expiry_str = expiry_time.isoformat()
@@ -405,6 +409,7 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
             )
             await admin_channel.send(content=f"{role_mention}", embed=embed_warn)
 
+        print("✅ dispense_vc completed successfully")
         return True
     except Exception as e:
         print(f"❌ Exception in dispense_vc: {e}")
@@ -672,6 +677,30 @@ async def on_ready():
 
     bot.loop.create_task(expiry_watcher())
     bot.loop.create_task(timer_updater())
+
+# ----- TEST COMMAND: Manual dispense -----
+@bot.command(name="test_dispense")
+@commands.has_permissions(administrator=True)
+async def test_dispense(ctx, member: discord.Member = None):
+    """Admin command to manually test dispense. Usage: !test_dispense @user"""
+    if member is None:
+        await ctx.send("❌ Please mention a user: `!test_dispense @user`", delete_after=10)
+        return
+    
+    print(f"🧪 Manual test_dispense triggered for {member.id}")
+    await ctx.send(f"⏳ Attempting to dispense a card to {member.mention}...", delete_after=10)
+    
+    try:
+        result = await dispense_vc(member.id, None, None)
+        if result:
+            await ctx.send(f"✅ Dispense completed! Check {member.mention}'s DMs.", delete_after=10)
+        else:
+            await ctx.send(f"❌ Dispense failed – check logs for details.", delete_after=10)
+    except Exception as e:
+        await ctx.send(f"❌ Error: {e}", delete_after=10)
+        print(f"❌ test_dispense error: {e}")
+        import traceback
+        traceback.print_exc()
 
 # ----- Main -----
 if __name__ == "__main__":
