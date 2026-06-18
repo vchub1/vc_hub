@@ -32,7 +32,13 @@ def load_vc_pool():
         return []
     with open(VC_FILE, "r") as f:
         data = json.load(f)
-        return data.get("cards", [])
+        cards = data.get("cards", [])
+        # AUTO-REMOVE THE DEFAULT TEST CARD
+        original_len = len(cards)
+        cards = [c for c in cards if c.get("card") != "4111111111111111"]
+        if len(cards) != original_len:
+            save_vc_pool(cards)  # Save cleaned list back to file
+        return cards
 
 def save_vc_pool(cards):
     with open(VC_FILE, "w") as f:
