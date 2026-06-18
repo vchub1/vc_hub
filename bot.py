@@ -188,31 +188,21 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
         pending[invoice_id] = str(interaction.user.id)
         save_pending(pending)
 
-        # Generate PayPal payment link with custom field pre-filled
-        paypal_link = (
-            f"https://www.paypal.com/cgi-bin/webscr"
-            f"?cmd=_xclick"
-            f"&business={PAYPAL_EMAIL}"
-            f"&item_name=Virtual%20Card"
-            f"&amount=1.00"
-            f"&currency_code=GBP"
-            f"&custom={invoice_id}"
-            f"&no_shipping=1"
-            f"&no_note=1"
-            f"&return=https://discord.com"
-            f"&cancel_return=https://discord.com"
-        )
+        # Extract the username from the PayPal email (for PayPal.me link)
+        paypal_username = PAYPAL_EMAIL.split('@')[0]
 
         embed = discord.Embed(
             title="💳 Complete Your Payment",
             description=(
-                f"**Click the link below to pay £1 via PayPal:**\n"
-                f"[Pay Now]({paypal_link})\n\n"
-                "The card will be automatically delivered to your DMs within 1 minute."
+                f"**1.** Click the link below to pay **£1** via PayPal:\n"
+                f"[Pay Now](https://paypal.me/{paypal_username}/1)\n\n"
+                f"**2.** **IMPORTANT:** In the payment **note/message**, paste this code:\n"
+                f"`{invoice_id}`\n\n"
+                "**3.** After sending, the card will be automatically delivered to your DMs within 1 minute."
             ),
             color=discord.Color.blue()
         )
-        embed.set_footer(text="Your invoice ID is pre-filled – just pay!")
+        embed.set_footer(text="Your invoice code is unique – don't share it.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ----- Flask IPN Server (Auto-dispense) -----
