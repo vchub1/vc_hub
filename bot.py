@@ -1,5 +1,6 @@
 import discord
 from discord import ui
+from discord.ext import commands
 import asyncio
 import json
 import os
@@ -19,7 +20,7 @@ STORE_CHANNEL_ID = int(os.getenv("STORE_CHANNEL_ID"))
 PAYPAL_EMAIL = os.getenv("PAYPAL_EMAIL")
 PORT = int(os.getenv("PORT", 5000))
 
-VC_FILE = "vcs.txt"
+VC_FILE = "vcs.json"  # Now using JSON instead of txt
 PENDING_FILE = "pending.json"
 ACTIVE_FILE = "active.json"
 
@@ -28,11 +29,12 @@ ACTIVE_FILE = "active.json"
 def load_vc_pool():
     if not os.path.exists(VC_FILE): return []
     with open(VC_FILE, "r") as f:
-        return [line.strip() for line in f if line.strip()]
+        data = json.load(f)
+        return data.get("cards", [])
 
-def save_vc_pool(pool):
+def save_vc_pool(cards):
     with open(VC_FILE, "w") as f:
-        f.write("\n".join(pool))
+        json.dump({"cards": cards}, f, indent=4)
 
 def load_pending():
     if not os.path.exists(PENDING_FILE): return {}
@@ -52,22 +54,124 @@ def save_active(data):
     with open(ACTIVE_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-# ----- Discord Bot -----
+# ----- Discord Bot Setup -----
 intents = discord.Intents.default()
 intents.members = True
-bot = discord.Client(intents=intents)
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ----- Purge Command -----
+@bot.command(name="purge")
+@commands.has_permissions(manage_messages=True)
+async def purge(ctx, amount: int):
+    """Delete messages in a channel (Admin only)"""
+    if amount > 1000:
+        await ctx.send("❌ Can't delete more than 1000 messages at once.", ephemeral=True)
+        return
+    deleted = await ctx.channel.purge(limit=amount + 1)
+    msg = await ctx.send(f"✅ Deleted {len(deleted) - 1} messages.")
+    await asyncio.sleep(3)
+    await msg.delete()
+
+@bot.command(name="nuke")
+@commands.has_permissions(manage_messages=True)
+async def nuke(ctx):
+    """Delete ALL messages in a channel (Admin only)"""
+    await ctx.send("⚠️ Nuking channel... this will delete ALL messages!")
+    deleted = await ctx.channel.purge(limit=10000)
+    msg = await ctx.send(f"💥 Channel nuked! Deleted {len(deleted)} messages.")
+    await asyncio.sleep(5)
+    await msg.delete()
+
+# ----- Admin VC Management Panel -----
+class VCPanelView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="➕ Add Cards", style=discord.ButtonStyle.success, emoji="➕", row=0)
+    async def add_card(self, interaction: discord.Interaction, button: ui.Button):
+        modal = AddCardModal()
+        await interaction.response.send_modal(modal)
+
+    @ui.button(label="📋 View Cards", style=discord.ButtonStyle.primary, emoji="📋", row=0)
+    async def view_cards(self, interaction: discord.Interaction, button: ui.Button):
+        cards = load_vc_pool()
+        if not cards:
+            await interaction.response.send_message("📭 **No cards in stock.**", ephemeral=True)
+            return
+        
+        # Show first 20 cards
+        total = len(cards)
+        display = cards[:20]
+        embed = discord.Embed(
+            title=f"💳 VC Stock ({total} cards)",
+            description="\n".join([f"`{i+1}. {c['card']} | Exp: {c['expiry']} | CVV: {c['cvv']}`" for i, c in enumerate(display)]),
+            color=discord.Color.blue()
+        )
+        if total > 20:
+            embed.set_footer(text=f"Showing 20 of {total} cards")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @ui.button(label="🗑️ Remove Card", style=discord.ButtonStyle.danger, emoji="🗑️", row=0)
+    async def remove_card(self, interaction: discord.Interaction, button: ui.Button):
+        modal = RemoveCardModal()
+        await interaction.response.send_modal(modal)
+
+class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
+    card_number = ui.TextInput(label="Card Number", placeholder="4111111111111111", required=True)
+    expiry = ui.TextInput(label="Expiry Date", placeholder="MM/YY", required=True)
+    cvv = ui.TextInput(label="CVV", placeholder="123", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cards = load_vc_pool()
+        cards.append({
+            "card": self.card_number.value.strip(),
+            "expiry": self.expiry.value.strip(),
+            "cvv": self.cvv.value.strip()
+        })
+        save_vc_pool(cards)
+        await interaction.response.send_message(f"✅ Card added: `{self.card_number.value} | Exp: {self.expiry.value} | CVV: {self.cvv.value}`", ephemeral=True)
+
+class RemoveCardModal(ui.Modal, title="🗑️ Remove Card"):
+    index = ui.TextInput(label="Card Number (1-based)", placeholder="Enter the card number to remove", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            idx = int(self.index.value) - 1
+            cards = load_vc_pool()
+            if 0 <= idx < len(cards):
+                removed = cards.pop(idx)
+                save_vc_pool(cards)
+                await interaction.response.send_message(f"✅ Removed card: `{removed['card']}`", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Invalid card number.", ephemeral=True)
+        except ValueError:
+            await interaction.response.send_message("❌ Please enter a valid number.", ephemeral=True)
+
+# ----- Setup VC Management Panel -----
+@bot.command(name="setup_vcpanel")
+@commands.has_permissions(administrator=True)
+async def setup_vcpanel(ctx):
+    """Post the VC management panel (Admin only)"""
+    embed = discord.Embed(
+        title="💳 VC Management Panel",
+        description="Use the buttons below to manage your VC stock.",
+        color=discord.Color.purple()
+    )
+    await ctx.send(embed=embed, view=VCPanelView())
+    await ctx.message.delete()
 
 # ----- Dispense VC -----
 async def dispense_vc(user_id: int):
-    pool = load_vc_pool()
-    if not pool:
+    cards = load_vc_pool()
+    if not cards:
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
-            await admin_channel.send("🚨 **No VCs left!** Refill `vcs.txt`.")
+            await admin_channel.send("🚨 **No VCs left!** Use `!setup_vcpanel` to add more.")
         return False
 
-    vc = pool.pop()
-    save_vc_pool(pool)
+    vc_data = cards.pop(0)  # Get first card
+    save_vc_pool(cards)
 
     expiry_time = datetime.now(UTC) + timedelta(hours=2)
     expiry_str = expiry_time.isoformat()
@@ -78,10 +182,10 @@ async def dispense_vc(user_id: int):
     if user:
         embed = discord.Embed(
             title="✨ Your Virtual Card",
-            description=f"```\n{vc}\n```",
+            description=f"**Card:** `{vc_data['card']}`\n**Expiry:** `{vc_data['expiry']}`\n**CVV:** `{vc_data['cvv']}`",
             color=discord.Color.green()
         )
-        embed.add_field(name="⏰ Time remaining", value="2 hours (updates live)", inline=False)
+        embed.add_field(name="⏰ Time Remaining", value="2 hours (updates live)", inline=False)
         embed.set_footer(text="This card will be terminated after 2 hours.")
         try:
             dm_channel = await user.create_dm()
@@ -92,11 +196,12 @@ async def dispense_vc(user_id: int):
             pass
 
     active = load_active()
-    active[vc] = {
+    active[vc_data['card']] = {
         "user_id": user_id,
         "expires_at": expiry_str,
         "dm_channel_id": dm_channel_id,
-        "dm_message_id": dm_message_id
+        "dm_message_id": dm_message_id,
+        "card_data": vc_data
     }
     save_active(active)
 
@@ -107,26 +212,25 @@ async def dispense_vc(user_id: int):
         role_mention = seller_role.mention if seller_role else "@here"
         embed_warn = discord.Embed(
             title="⚠️ VC DISPENSED – USE WITHIN 2 HOURS",
-            description=f"Card: `{vc}`\nUser: <@{user_id}>\nExpires at {expiry_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            description=f"Card: `{vc_data['card']}`\nExpiry: `{vc_data['expiry']}`\nUser: <@{user_id}>\nExpires at {expiry_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
             color=discord.Color.orange()
         )
         await admin_channel.send(content=f"{role_mention}", embed=embed_warn)
 
     return True
 
-# ----- Send unmatched alert to admin channel (async) -----
+# ----- Send unmatched alert -----
 async def send_unmatched_alert(payer_email: str, txn_id: str, amount: str):
     admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
     if admin_channel:
         embed = discord.Embed(
-            title="⚠️ Unmatched Payment – Manual Review Needed",
+            title="⚠️ Unmatched Payment – Manual Review",
             description=(
                 f"**Payer Email:** {payer_email}\n"
                 f"**Transaction ID:** {txn_id}\n"
                 f"**Amount:** £{amount}\n"
                 f"**Status:** Completed\n"
-                f"**This payment didn't match any pending purchase.**\n\n"
-                f"Please check your PayPal and manually dispense a card to this user if valid."
+                f"This payment didn't match any pending purchase."
             ),
             color=discord.Color.orange()
         )
@@ -138,7 +242,7 @@ async def expiry_watcher():
     while not bot.is_closed():
         active = load_active()
         expired = []
-        for vc, data in active.items():
+        for card, data in active.items():
             exp = datetime.fromisoformat(data["expires_at"])
             if datetime.now(UTC) >= exp:
                 admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
@@ -147,21 +251,21 @@ async def expiry_watcher():
                     role_mention = seller_role.mention if seller_role else "@here"
                     await admin_channel.send(
                         f"⏰ {role_mention} **TERMINATE THIS VC NOW!**\n"
-                        f"Card: `{vc}`\nUser: <@{data['user_id']}>\nExpired at {exp.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        f"Card: `{card}`\nUser: <@{data['user_id']}>\nExpired at {exp.strftime('%Y-%m-%d %H:%M:%S UTC')}"
                     )
-                expired.append(vc)
+                expired.append(card)
         if expired:
-            for vc in expired:
-                del active[vc]
+            for card in expired:
+                del active[card]
             save_active(active)
         await asyncio.sleep(60)
 
-# ----- Live timer updater -----
+# ----- Timer updater -----
 async def timer_updater():
     await bot.wait_until_ready()
     while not bot.is_closed():
         active = load_active()
-        for vc, data in active.items():
+        for card, data in active.items():
             exp = datetime.fromisoformat(data["expires_at"])
             remaining = exp - datetime.now(UTC)
             if remaining.total_seconds() <= 0:
@@ -177,21 +281,25 @@ async def timer_updater():
                             embed = msg.embeds[0]
                             minutes, seconds = divmod(int(remaining.total_seconds()), 60)
                             hours, minutes = divmod(minutes, 60)
-                            embed.set_field_at(0, name="⏰ Time remaining", value=f"{hours}h {minutes}m {seconds}s", inline=False)
+                            embed.set_field_at(0, name="⏰ Time Remaining", value=f"{hours}h {minutes}m {seconds}s", inline=False)
                             await msg.edit(embed=embed)
                 except:
                     pass
         await asyncio.sleep(30)
 
-# ----- UI: Store button -----
-class StoreView(ui.View):
+# ----- Purchase Flow (with T&C) -----
+class TermsView(ui.View):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(timeout=120)
 
-    @ui.button(label="✨ Purchase Virtual Card", style=discord.ButtonStyle.primary, emoji="💳", custom_id="buy")
-    async def buy(self, interaction: discord.Interaction, button: ui.Button):
+    @ui.button(label="✅ Agree & Continue", style=discord.ButtonStyle.success, emoji="✅")
+    async def agree(self, interaction: discord.Interaction, button: ui.Button):
         modal = BuyModal()
         await interaction.response.send_modal(modal)
+
+    @ui.button(label="❌ Disagree", style=discord.ButtonStyle.danger, emoji="❌")
+    async def disagree(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message("❌ You must agree to the Terms & Conditions to purchase.", ephemeral=True)
 
 class BuyModal(ui.Modal, title="💳 Purchase VC"):
     email = ui.TextInput(label="Your PayPal Email", placeholder="The email you'll use to pay", required=True)
@@ -210,14 +318,37 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
         embed = discord.Embed(
             title="💳 Complete Your Payment",
             description=(
-                f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
-                f"**2.** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
-                f"**3.** That's it – the bot will detect your payment and deliver the card automatically."
+                f"**Step 1:** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
+                f"**Step 2:** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
+                f"**Step 3:** That's it! The card will be delivered automatically."
             ),
             color=discord.Color.blue()
         )
         embed.set_footer(text="Make sure you send from the email you just entered.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ----- Store Button -----
+class StoreView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="💳 Purchase Virtual Card", style=discord.ButtonStyle.primary, emoji="✨", custom_id="buy")
+    async def buy(self, interaction: discord.Interaction, button: ui.Button):
+        embed = discord.Embed(
+            title="📋 Terms & Conditions",
+            description=(
+                "By purchasing a Virtual Card, you agree to the following:\n\n"
+                "**1.** You must use the Virtual Card within **2 hours** of receiving it.\n"
+                "**2.** After 2 hours, the card will be terminated and you will no longer be able to use it.\n"
+                "**3.** **No chargebacks** – if a chargeback is issued, necessary action will be taken.\n"
+                "**4.** This card is for **one-time use only**.\n\n"
+                "Do you agree to these terms?"
+            ),
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text="You must agree to proceed.")
+        view = TermsView()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 # ----- Flask IPN Server -----
 app_flask = Flask(__name__)
@@ -241,7 +372,6 @@ def ipn():
     print(f"🔑 Transaction ID: {txn_id}")
     print(f"🔑 Amount: {amount}")
 
-    # Verify IPN
     verify_url = "https://www.paypal.com/cgi-bin/webscr"
     verify_data = data.copy()
     verify_data["cmd"] = "_notify-validate"
@@ -255,14 +385,12 @@ def ipn():
     if resp.text == "VERIFIED":
         print("✅ IPN verified")
         if payment_status == "Completed":
-            # Safety check: amount must be exactly 1.00 (or 1)
             if float(amount) != 1.00:
                 print(f"⚠️ Amount is {amount}, not £1.00 – ignoring.")
                 return f"OK - Amount {amount}", 200
 
             print("✅ Payment Completed & Amount verified")
 
-            # Try to match by email
             pending = load_pending()
             matched_purchase_id = None
             matched_user_id = None
@@ -281,7 +409,6 @@ def ipn():
                 return "OK", 200
             else:
                 print(f"❌ No pending purchase found for email: {payer_email}")
-                print("📌 Sending manual approval request to admin channel...")
                 asyncio.run_coroutine_threadsafe(
                     send_unmatched_alert(payer_email, txn_id, amount),
                     bot.loop
@@ -301,14 +428,14 @@ def run_flask():
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+    
+    # Post store in STORE_CHANNEL_ID
     channel = bot.get_channel(STORE_CHANNEL_ID)
     if channel:
         embed = discord.Embed(
             title="🛍️ Virtual Card Store",
-            description=(
-                "Click **Purchase Virtual Card** to buy a card for **£1**.\n"
-                "After payment, the card is delivered automatically – no waiting."
-            ),
+            description="Click the button below to purchase a Virtual Card for **£1**.\n\n"
+                        "After payment, the card is delivered automatically – no waiting.",
             color=discord.Color.gold()
         )
         embed.set_footer(text="Cards expire 2 hours after delivery.")
@@ -322,15 +449,26 @@ async def on_ready():
     else:
         print(f"❌ Store channel {STORE_CHANNEL_ID} not found.")
 
+    # Post VC Management Panel in specified channel
+    panel_channel = bot.get_channel(1517019905696858273)
+    if panel_channel:
+        embed = discord.Embed(
+            title="💳 VC Management Panel",
+            description="Use the buttons below to manage your VC stock.",
+            color=discord.Color.purple()
+        )
+        try:
+            await panel_channel.send(embed=embed, view=VCPanelView())
+            print("✅ VC Management Panel sent successfully!")
+        except discord.Forbidden:
+            print("❌ Missing permissions to send the VC Management Panel.")
+        except Exception as e:
+            print(f"❌ Unexpected error sending VC Management Panel: {e}")
+    else:
+        print(f"❌ VC Management channel 1517019905696858273 not found.")
+
     bot.loop.create_task(expiry_watcher())
     bot.loop.create_task(timer_updater())
-
-@bot.event
-async def on_message(message):
-    if message.author == bot.user:
-        return
-    if message.content == "!ping":
-        await message.channel.send("Pong! Bot can send messages.")
 
 # ----- Main -----
 if __name__ == "__main__":
