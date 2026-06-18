@@ -25,7 +25,6 @@ ACTIVE_FILE = "active.json"
 
 # ----------------------------
 
-# ----- File helpers -----
 def load_vc_pool():
     if not os.path.exists(VC_FILE): return []
     with open(VC_FILE, "r") as f:
@@ -58,7 +57,7 @@ intents = discord.Intents.default()
 intents.members = True
 bot = discord.Client(intents=intents)
 
-# ----- Dispense VC (called by IPN) -----
+# ----- Dispense VC -----
 async def dispense_vc(user_id: int):
     pool = load_vc_pool()
     if not pool:
@@ -73,7 +72,6 @@ async def dispense_vc(user_id: int):
     expiry_time = datetime.utcnow() + timedelta(hours=2)
     expiry_str = expiry_time.isoformat()
 
-    # DM user with card + live timer
     user = await bot.fetch_user(user_id)
     dm_channel_id = None
     dm_message_id = None
@@ -93,7 +91,6 @@ async def dispense_vc(user_id: int):
         except:
             pass
 
-    # Save active
     active = load_active()
     active[vc] = {
         "user_id": user_id,
@@ -103,7 +100,6 @@ async def dispense_vc(user_id: int):
     }
     save_active(active)
 
-    # Ping seller role with the card
     admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
     if admin_channel:
         guild = admin_channel.guild
@@ -183,29 +179,33 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
     email = ui.TextInput(label="Your PayPal Email", placeholder="The email you'll use to pay", required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
-        invoice_id = f"VC-{interaction.user.id}-{secrets.token_hex(6)}"
+        # Generate a unique ID for this purchase
+        purchase_id = f"{interaction.user.id}-{secrets.token_hex(4)}"
+        
+        # Store the user's email and Discord ID
         pending = load_pending()
-        pending[invoice_id] = str(interaction.user.id)
+        pending[purchase_id] = {
+            "user_id": interaction.user.id,
+            "payer_email": self.email.value.strip().lower()  # Store email for matching
+        }
         save_pending(pending)
 
-        # Extract the username from the PayPal email (for PayPal.me link)
+        # Extract username for PayPal.me link
         paypal_username = PAYPAL_EMAIL.split('@')[0]
 
         embed = discord.Embed(
             title="💳 Complete Your Payment",
             description=(
-                f"**1.** Click the link below to pay **£1** via PayPal:\n"
-                f"[Pay Now](https://paypal.me/{paypal_username}/1)\n\n"
-                f"**2.** **IMPORTANT:** In the payment **note/message**, paste this code:\n"
-                f"`{invoice_id}`\n\n"
-                "**3.** After sending, the card will be automatically delivered to your DMs within 1 minute."
+                f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
+                f"**2.** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
+                f"**3.** That's it – the bot will detect your payment and deliver the card automatically."
             ),
             color=discord.Color.blue()
         )
-        embed.set_footer(text="Your invoice code is unique – don't share it.")
+        embed.set_footer(text="Make sure you send from the email you just entered.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ----- Flask IPN Server (Auto-dispense) -----
+# ----- Flask IPN Server (Auto-dispense by email match) -----
 app_flask = Flask(__name__)
 
 @app_flask.route("/test", methods=["GET"])
@@ -219,44 +219,53 @@ def ipn():
     print("📋 Full data:", data)
 
     payment_status = data.get("payment_status")
-    invoice_id = data.get("custom")
+    payer_email = data.get("payer_email", "").strip().lower()
     txn_id = data.get("txn_id")
-    payer_email = data.get("payer_email")
     print(f"🔑 Payment Status: {payment_status}")
-    print(f"🔑 Invoice ID (custom): {invoice_id}")
-    print(f"🔑 Transaction ID: {txn_id}")
     print(f"🔑 Payer Email: {payer_email}")
+    print(f"🔑 Transaction ID: {txn_id}")
 
-    # Verify IPN with PayPal
+    # Verify IPN
     verify_url = "https://www.paypal.com/cgi-bin/webscr"
     verify_data = data.copy()
     verify_data["cmd"] = "_notify-validate"
     try:
         resp = requests.post(verify_url, data=verify_data, timeout=10)
-        print(f"✅ PayPal verification response: {resp.text[:100]}...")
+        print(f"✅ PayPal verification: {resp.text[:50]}...")
     except Exception as e:
-        print(f"❌ Verification request failed: {e}")
+        print(f"❌ Verification failed: {e}")
         return "Verification failed", 500
 
     if resp.text == "VERIFIED":
-        print("✅ IPN verified successfully")
+        print("✅ IPN verified")
         if payment_status == "Completed":
-            print("✅ Payment status: Completed")
-            if invoice_id and invoice_id in load_pending():
-                pending = load_pending()
-                user_id_str = pending.pop(invoice_id)
+            print("✅ Payment Completed")
+            
+            # Check pending list for matching email
+            pending = load_pending()
+            matched_purchase_id = None
+            matched_user_id = None
+            
+            for purchase_id, data in pending.items():
+                if data.get("payer_email") == payer_email:
+                    matched_purchase_id = purchase_id
+                    matched_user_id = data.get("user_id")
+                    break
+            
+            if matched_purchase_id and matched_user_id:
+                print(f"✅ Found matching email: {payer_email} -> User {matched_user_id}")
+                del pending[matched_purchase_id]
                 save_pending(pending)
-                user_id = int(user_id_str)
-                asyncio.run_coroutine_threadsafe(dispense_vc(user_id), bot.loop)
+                asyncio.run_coroutine_threadsafe(dispense_vc(matched_user_id), bot.loop)
                 return "OK", 200
             else:
-                print(f"❌ Invoice ID '{invoice_id}' not found in pending")
-                return "Invoice not found", 404
+                print(f"❌ No pending purchase found for email: {payer_email}")
+                return "Email not found", 404
         else:
-            print(f"📌 Payment status is '{payment_status}' – not dispensing")
-            return f"OK - Status: {payment_status}", 200
+            print(f"📌 Status: {payment_status} – not dispensing")
+            return f"OK - {payment_status}", 200
     else:
-        print("❌ IPN verification failed")
+        print("❌ Verification failed")
         return "Verification failed", 400
 
 def run_flask():
@@ -290,7 +299,6 @@ async def on_ready():
     bot.loop.create_task(expiry_watcher())
     bot.loop.create_task(timer_updater())
 
-# ----- TEST: Simple ping command -----
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
