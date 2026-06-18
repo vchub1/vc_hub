@@ -28,7 +28,6 @@ ACTIVE_FILE = "active.json"
 
 def load_vc_pool():
     if not os.path.exists(VC_FILE):
-        # Create empty file if missing
         save_vc_pool([])
         return []
     with open(VC_FILE, "r") as f:
@@ -166,9 +165,24 @@ class VCPanelView(ui.View):
         await interaction.response.send_modal(modal)
 
 class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
-    card_number = ui.TextInput(label="Card Number (max 19 digits)", placeholder="4111111111111111", required=True, max_length=19)
-    expiry = ui.TextInput(label="Expiry Date (MM/YY)", placeholder="11/30", required=True, max_length=5)
-    cvv = ui.TextInput(label="CVV (3 digits)", placeholder="123", required=True, max_length=3)
+    card_number = ui.TextInput(
+        label="Card Number (max 19 digits, e.g., 1234567890123456789)",
+        placeholder="1234567890123456789",  # Clear 19‑digit example
+        required=True,
+        max_length=19
+    )
+    expiry = ui.TextInput(
+        label="Expiry Date (MM/YY, e.g., 11/30)",
+        placeholder="11/30",
+        required=True,
+        max_length=5
+    )
+    cvv = ui.TextInput(
+        label="CVV (3 digits, e.g., 123)",
+        placeholder="123",
+        required=True,
+        max_length=3
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         if not validate_card(self.card_number.value):
@@ -191,7 +205,11 @@ class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
         await interaction.response.send_message(f"✅ Card added: `{self.card_number.value} | Exp: {self.expiry.value} | CVV: {self.cvv.value}`", ephemeral=True)
 
 class RemoveCardModal(ui.Modal, title="🗑️ Remove Card"):
-    index = ui.TextInput(label="Card Number (1-based)", placeholder="Enter the card number to remove", required=True)
+    index = ui.TextInput(
+        label="Card Number (1‑based)",
+        placeholder="Enter the card number to remove",
+        required=True
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -359,7 +377,11 @@ class TermsView(ui.View):
         await interaction.response.send_message("❌ You must agree to the Terms & Conditions to purchase.", ephemeral=True)
 
 class BuyModal(ui.Modal, title="💳 Purchase VC"):
-    email = ui.TextInput(label="Your PayPal Email", placeholder="The email you'll use to pay", required=True)
+    email = ui.TextInput(
+        label="Your PayPal Email",
+        placeholder="The email you'll use to pay",
+        required=True
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         purchase_id = f"{interaction.user.id}-{secrets.token_hex(4)}"
