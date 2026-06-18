@@ -1,5 +1,5 @@
 import discord
-from discord import ui
+from discord import ui, app_commands
 from discord.ext import commands
 import asyncio
 import json
@@ -89,6 +89,7 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+tree = app_commands.CommandTree(bot)
 
 # ----- Helper: Generate progress embed -----
 def progress_embed(percent: int, title: str, description: str, color=discord.Color.blue()):
@@ -458,7 +459,6 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
 
 # ----- Wrong amount handler with progress update -----
 async def handle_wrong_amount(user_id: int, payer_email: str, txn_id: str, amount: str, token: str = None, msg_id: int = None):
-    # Update followup embed with error
     if token and msg_id:
         embed = discord.Embed(
             title="❌ Payment Failed – Wrong Amount",
@@ -469,7 +469,6 @@ async def handle_wrong_amount(user_id: int, payer_email: str, txn_id: str, amoun
         )
         await edit_followup_embed(token, msg_id, embed)
 
-    # DM user
     try:
         user = await bot.fetch_user(user_id)
         if user:
@@ -487,7 +486,6 @@ async def handle_wrong_amount(user_id: int, payer_email: str, txn_id: str, amoun
     except:
         pass
 
-    # Admin alert
     admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
     if admin_channel:
         try:
@@ -612,7 +610,6 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
 
         await interaction.response.defer(ephemeral=True, thinking=False)
 
-        # Send initial progress embed (20%)
         embed = progress_embed(
             20,
             "⏳ Step 1: Email Submitted",
@@ -692,6 +689,40 @@ class StoreView(ui.View):
         )
         embed.set_footer(text="We're here to help – just ask!")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ----- SLASH COMMAND: /say -----
+@tree.command(name="say", description="Send a message via the bot to a specified channel")
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(message="The message to send", channel_id="The ID of the channel to send to")
+async def say(interaction: discord.Interaction, message: str, channel_id: str):
+    """Send a clean embed to any channel (admin only)."""
+    try:
+        channel_id_int = int(channel_id)
+    except ValueError:
+        await interaction.response.send_message("❌ Invalid channel ID. Please provide a valid numeric ID.", ephemeral=True)
+        return
+
+    channel = interaction.guild.get_channel(channel_id_int)
+    if not channel:
+        await interaction.response.send_message("❌ Channel not found. Make sure the ID is correct and the bot can see it.", ephemeral=True)
+        return
+
+    permissions = channel.permissions_for(interaction.guild.me)
+    if not permissions.send_messages or not permissions.embed_links:
+        await interaction.response.send_message("❌ I don't have permission to send messages or embed links in that channel.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        description=message,
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text=f"Message requested by {interaction.user.display_name}")
+
+    try:
+        await channel.send(embed=embed)
+        await interaction.response.send_message(f"✅ Message sent to {channel.mention}", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to send message: {e}", ephemeral=True)
 
 # ----- Flask IPN Server -----
 app_flask = Flask(__name__)
@@ -819,6 +850,10 @@ def run_flask():
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+    
+    # Sync slash commands
+    await tree.sync()
+    print("✅ Slash commands synced.")
     
     channel = bot.get_channel(STORE_CHANNEL_ID)
     if channel:
