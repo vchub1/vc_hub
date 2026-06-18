@@ -34,7 +34,6 @@ def load_vc_pool():
         with open(VC_FILE, "r") as f:
             data = json.load(f)
             cards = data.get("cards", [])
-            # AUTO-REMOVE THE DEFAULT TEST CARD
             original_len = len(cards)
             cards = [c for c in cards if c.get("card") != "4111111111111111"]
             if len(cards) != original_len:
@@ -71,6 +70,22 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ----- Helper to edit ephemeral followup -----
+async def edit_followup(token: str, msg_id: int, content: str, embed=None):
+    """Edit an ephemeral followup message using the interaction token."""
+    url = f"https://discord.com/api/v10/webhooks/{bot.user.id}/{token}/messages/{msg_id}"
+    payload = {"content": content}
+    if embed:
+        payload["embeds"] = [embed.to_dict()]
+    try:
+        resp = requests.patch(url, json=payload)
+        if resp.status_code == 200:
+            print("✅ Updated ephemeral followup")
+        else:
+            print(f"❌ Failed to update followup: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Error updating followup: {e}")
 
 # ----- Purge/Nuke Commands -----
 @bot.command(name="purge")
@@ -227,7 +242,6 @@ class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
 
             print(f"📝 Add Card: {raw_card} | {raw_expiry} | {raw_cvv}")
 
-            # Clean card number
             cleaned_card = clean_card_number(raw_card)
             if not cleaned_card.isdigit() or not (12 <= len(cleaned_card) <= 19):
                 await interaction.response.send_message(
@@ -236,7 +250,6 @@ class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
                 )
                 return
 
-            # Validate expiry
             if not validate_expiry(raw_expiry):
                 await interaction.response.send_message(
                     f"❌ Invalid expiry – use MM/YY (e.g., 11/30). You entered: `{raw_expiry}`",
@@ -244,7 +257,6 @@ class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
                 )
                 return
 
-            # Validate CVV
             if not validate_cvv(raw_cvv):
                 await interaction.response.send_message(
                     f"❌ Invalid CVV – must be 3-4 digits. You entered: `{raw_cvv}`",
@@ -310,8 +322,8 @@ async def setup_vcpanel(ctx):
     await ctx.send(embed=embed, view=VCPanelView())
     await ctx.message.delete()
 
-# ----- Dispense VC -----
-async def dispense_vc(user_id: int):
+# ----- Dispense VC (with followup edit) -----
+async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
     cards = load_vc_pool()
     if not cards:
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
@@ -329,20 +341,35 @@ async def dispense_vc(user_id: int):
     dm_channel_id = None
     dm_message_id = None
     if user:
-        embed = discord.Embed(
+        # Card details embed
+        embed_card = discord.Embed(
             title="✨ Your Virtual Card",
             description=f"**Card:** `{vc_data['card']}`\n**Expiry:** `{vc_data['expiry']}`\n**CVV:** `{vc_data['cvv']}`",
             color=discord.Color.green()
         )
-        embed.add_field(name="⏰ Time Remaining", value="2 hours (updates live)", inline=False)
-        embed.set_footer(text="This card will be terminated after 2 hours.")
+        embed_card.add_field(name="⏰ Time Remaining", value="2 hours (updates live)", inline=False)
+        embed_card.set_footer(text="This card will be terminated after 2 hours.")
+
+        # Thank you embed (DM)
+        embed_confirm = discord.Embed(
+            title="✅ Thank You for Your Order!",
+            description="Your Virtual Card has been sent to your DMs above.\n\n"
+                        "**Please check your messages for the card details.**",
+            color=discord.Color.gold()
+        )
+        embed_confirm.set_footer(text="You have 2 hours to use this card.")
+
         try:
             dm_channel = await user.create_dm()
-            msg = await dm_channel.send(embed=embed)
+            msg_card = await dm_channel.send(embed=embed_card)
             dm_channel_id = dm_channel.id
-            dm_message_id = msg.id
-        except:
-            pass
+            dm_message_id = msg_card.id
+            await dm_channel.send(embed=embed_confirm)
+            print(f"✅ Confirmation DM sent to user {user_id}")
+        except discord.Forbidden:
+            print(f"❌ Cannot DM user {user_id}")
+        except Exception as e:
+            print(f"❌ DM error: {e}")
 
     active = load_active()
     active[vc_data['card']] = {
@@ -353,6 +380,14 @@ async def dispense_vc(user_id: int):
         "card_data": vc_data
     }
     save_active(active)
+
+    # Update the ephemeral followup message in the channel
+    if token and msg_id:
+        await edit_followup(
+            token,
+            msg_id,
+            "✅ **Thank you for your order!**\nPlease check your DMs for your card details."
+        )
 
     admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
     if admin_channel:
@@ -466,19 +501,81 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
         }
         save_pending(pending)
 
+        # Send the initial "processing" followup and store its ID and token
+        await interaction.response.defer(ephemeral=True, thinking=False)  # Defer to send followup later
+        followup_msg = await interaction.followup.send(
+            content="⏳ **Processing your payment...**\nWe're waiting for PayPal to confirm your payment.",
+            ephemeral=True
+        )
+        # Store the followup message ID and token in pending
+        pending[purchase_id]["followup_msg_id"] = followup_msg.id
+        pending[purchase_id]["followup_token"] = interaction.token
+        save_pending(pending)
+
         paypal_username = PAYPAL_EMAIL.split('@')[0]
 
-        embed = discord.Embed(
-            title="💳 Complete Your Payment",
-            description=(
-                f"**Step 1:** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
-                f"**Step 2:** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
-                f"**Step 3:** That's it! The card will be delivered automatically."
-            ),
-            color=discord.Color.blue()
+        # Now send the payment instructions in a separate followup or the same? The user already sees the processing message. But we also need to give them the payment link. We can edit the followup to include instructions, but we want it to update later to thank you. So we'll send a second message? Actually we can combine: initially send a message with instructions, then later edit it to thank you. But we can't edit the content if we want to keep instructions. So we can send the instructions as a separate ephemeral message, or include them in the initial and then edit to thank you. The user wants the message to change from "send £1" to "thank you". So we should initially send the payment instructions, then later edit to thank you.
+
+        # We'll edit the followup to include instructions after defer.
+        await interaction.edit_original_response(
+            content=f"💳 **Complete Your Payment**\n\n"
+                    f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
+                    f"**2.** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
+                    f"**3.** After payment, this message will update automatically."
         )
-        embed.set_footer(text="Make sure you send from the email you just entered.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # But we already sent a followup, we need to edit that instead. Let's store the message ID and use edit_followup later. Actually we can use interaction.edit_original_response to edit the initial response (since we deferred). That's easier.
+
+        # Let's redo: we defer, send an ephemeral message with the instructions (which will be the one we edit later). We don't need a separate followup.
+        # We'll just use the original response.
+
+        # But we already used await interaction.response.defer(ephemeral=True, thinking=False) and then sent the followup. We can edit the original response with interaction.edit_original_response, but that's for the original reply, not the followup. We can just send the initial message as the instructions and later edit it.
+
+        # Let's simplify: Instead of deferring, we send a modal response that includes the instructions. But we need the message to be editable later. So we'll send an ephemeral message after defer.
+
+        # I'll restructure: In on_submit, we defer, then send an ephemeral message with instructions, and store its ID and token. Then later we edit it.
+
+        # The above code already does that: it sends a followup with the "processing" message, but we want the instructions. So we'll change the followup to include instructions.
+
+        # Actually we can just send the instructions as the followup, and later edit it.
+
+        # Let's remove the "processing" and just send the instructions directly, then later edit to thank you.
+
+        # I'll rewrite the on_submit to send the instructions as the followup, and store its ID.
+
+        # Since we already deferred, we can send the followup with instructions.
+
+        await interaction.followup.edit(
+            message_id=followup_msg.id,
+            content=f"💳 **Complete Your Payment**\n\n"
+                    f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
+                    f"**2.** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
+                    f"**3.** After payment, this message will update automatically."
+        )
+
+        # But we already sent the "processing" message; we can edit it to instructions.
+        # We stored the followup_msg.id and token, so we can edit later.
+
+        # Actually, we can just send the instructions as the initial followup and not send a separate "processing" message.
+        # Let's just send the instructions directly, and store the message ID for later editing.
+
+        # We'll change the code: after defer, we send the instructions as a followup, store its ID and token.
+
+        # But we already have the processing message sent. We can edit that to instructions now, and then later edit to thank you.
+
+        await interaction.followup.edit(
+            message_id=followup_msg.id,
+            content=f"💳 **Complete Your Payment**\n\n"
+                    f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
+                    f"**2.** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
+                    f"**3.** After payment, this message will update automatically."
+        )
+
+        # Now store the token and msg_id in pending
+        pending[purchase_id]["followup_msg_id"] = followup_msg.id
+        pending[purchase_id]["followup_token"] = interaction.token
+        save_pending(pending)
+
+        # Done, the user sees the instructions, and we'll edit later.
 
 # ----- Store Button -----
 class StoreView(ui.View):
@@ -547,18 +644,22 @@ def ipn():
             pending = load_pending()
             matched_purchase_id = None
             matched_user_id = None
+            token = None
+            msg_id = None
 
             for purchase_id, data in pending.items():
                 if data.get("payer_email", "").strip().lower() == payer_email:
                     matched_purchase_id = purchase_id
                     matched_user_id = data.get("user_id")
+                    token = data.get("followup_token")
+                    msg_id = data.get("followup_msg_id")
                     break
 
             if matched_purchase_id and matched_user_id:
                 print(f"✅ Found matching email: {payer_email} -> User {matched_user_id}")
                 del pending[matched_purchase_id]
                 save_pending(pending)
-                asyncio.run_coroutine_threadsafe(dispense_vc(matched_user_id), bot.loop)
+                asyncio.run_coroutine_threadsafe(dispense_vc(matched_user_id, token, msg_id), bot.loop)
                 return "OK", 200
             else:
                 print(f"❌ No pending purchase found for email: {payer_email}")
