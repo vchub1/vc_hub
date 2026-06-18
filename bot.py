@@ -201,8 +201,13 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
         embed.set_footer(text="The code is unique to you – don't share it.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ----- Flask IPN Server (UPDATED) -----
+# ----- Flask IPN Server (with Test Route) -----
 app_flask = Flask(__name__)
+
+# Test route to verify the server is alive
+@app_flask.route("/test", methods=["GET"])
+def test():
+    return "✅ Flask server is running!", 200
 
 @app_flask.route("/ipn", methods=["POST"])
 def ipn():
