@@ -321,86 +321,96 @@ async def setup_vcpanel(ctx):
     await ctx.send(embed=embed, view=VCPanelView())
     await ctx.message.delete()
 
-# ----- Dispense VC (with followup edit) -----
+# ----- Dispense VC (with debug logging) -----
 async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
-    cards = load_vc_pool()
-    if not cards:
+    print(f"🔍 dispense_vc called: user_id={user_id}, token={'present' if token else 'None'}, msg_id={msg_id}")
+    try:
+        cards = load_vc_pool()
+        if not cards:
+            admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
+            if admin_channel:
+                await admin_channel.send("🚨 **No VCs left!** Use `!setup_vcpanel` to add more.")
+            return False
+
+        vc_data = cards.pop(0)
+        save_vc_pool(cards)
+
+        expiry_time = datetime.now(UTC) + timedelta(hours=2)
+        expiry_str = expiry_time.isoformat()
+
+        user = await bot.fetch_user(user_id)
+        dm_channel_id = None
+        dm_message_id = None
+        if user:
+            # Card details embed
+            embed_card = discord.Embed(
+                title="✨ Your Virtual Card",
+                description=f"**Card:** `{vc_data['card']}`\n**Expiry:** `{vc_data['expiry']}`\n**CVV:** `{vc_data['cvv']}`",
+                color=discord.Color.green()
+            )
+            embed_card.add_field(name="⏰ Time Remaining", value="2 hours (updates live)", inline=False)
+            embed_card.set_footer(text="This card will be terminated after 2 hours.")
+
+            # Thank you embed (DM)
+            embed_confirm = discord.Embed(
+                title="✅ Thank You for Your Order!",
+                description="Your Virtual Card has been sent to your DMs above.\n\n"
+                            "**Please check your messages for the card details.**",
+                color=discord.Color.gold()
+            )
+            embed_confirm.set_footer(text="You have 2 hours to use this card.")
+
+            try:
+                dm_channel = await user.create_dm()
+                msg_card = await dm_channel.send(embed=embed_card)
+                dm_channel_id = dm_channel.id
+                dm_message_id = msg_card.id
+                await dm_channel.send(embed=embed_confirm)
+                print(f"✅ Confirmation DM sent to user {user_id}")
+            except discord.Forbidden:
+                print(f"❌ Cannot DM user {user_id}")
+            except Exception as e:
+                print(f"❌ DM error: {e}")
+
+        active = load_active()
+        active[vc_data['card']] = {
+            "user_id": user_id,
+            "expires_at": expiry_str,
+            "dm_channel_id": dm_channel_id,
+            "dm_message_id": dm_message_id,
+            "card_data": vc_data
+        }
+        save_active(active)
+
+        # Update the ephemeral followup message if we have token and msg_id
+        if token and msg_id:
+            print(f"🔄 Updating ephemeral followup with token {token[:10]}... and msg_id {msg_id}")
+            await edit_followup(
+                token,
+                msg_id,
+                "✅ **Thank you for your order!**\nPlease check your DMs for your card details."
+            )
+        else:
+            print("⚠️ No token/msg_id – skipping ephemeral update")
+
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
-            await admin_channel.send("🚨 **No VCs left!** Use `!setup_vcpanel` to add more.")
+            guild = admin_channel.guild
+            seller_role = guild.get_role(SELLER_ROLE_ID)
+            role_mention = seller_role.mention if seller_role else "@here"
+            embed_warn = discord.Embed(
+                title="⚠️ VC DISPENSED – USE WITHIN 2 HOURS",
+                description=f"Card: `{vc_data['card']}`\nExpiry: `{vc_data['expiry']}`\nUser: <@{user_id}>\nExpires at {expiry_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                color=discord.Color.orange()
+            )
+            await admin_channel.send(content=f"{role_mention}", embed=embed_warn)
+
+        return True
+    except Exception as e:
+        print(f"❌ Exception in dispense_vc: {e}")
+        import traceback
+        traceback.print_exc()
         return False
-
-    vc_data = cards.pop(0)
-    save_vc_pool(cards)
-
-    expiry_time = datetime.now(UTC) + timedelta(hours=2)
-    expiry_str = expiry_time.isoformat()
-
-    user = await bot.fetch_user(user_id)
-    dm_channel_id = None
-    dm_message_id = None
-    if user:
-        # Card details embed
-        embed_card = discord.Embed(
-            title="✨ Your Virtual Card",
-            description=f"**Card:** `{vc_data['card']}`\n**Expiry:** `{vc_data['expiry']}`\n**CVV:** `{vc_data['cvv']}`",
-            color=discord.Color.green()
-        )
-        embed_card.add_field(name="⏰ Time Remaining", value="2 hours (updates live)", inline=False)
-        embed_card.set_footer(text="This card will be terminated after 2 hours.")
-
-        # Thank you embed (DM)
-        embed_confirm = discord.Embed(
-            title="✅ Thank You for Your Order!",
-            description="Your Virtual Card has been sent to your DMs above.\n\n"
-                        "**Please check your messages for the card details.**",
-            color=discord.Color.gold()
-        )
-        embed_confirm.set_footer(text="You have 2 hours to use this card.")
-
-        try:
-            dm_channel = await user.create_dm()
-            msg_card = await dm_channel.send(embed=embed_card)
-            dm_channel_id = dm_channel.id
-            dm_message_id = msg_card.id
-            await dm_channel.send(embed=embed_confirm)
-            print(f"✅ Confirmation DM sent to user {user_id}")
-        except discord.Forbidden:
-            print(f"❌ Cannot DM user {user_id}")
-        except Exception as e:
-            print(f"❌ DM error: {e}")
-
-    active = load_active()
-    active[vc_data['card']] = {
-        "user_id": user_id,
-        "expires_at": expiry_str,
-        "dm_channel_id": dm_channel_id,
-        "dm_message_id": dm_message_id,
-        "card_data": vc_data
-    }
-    save_active(active)
-
-    # Update the ephemeral followup message in the channel
-    if token and msg_id:
-        await edit_followup(
-            token,
-            msg_id,
-            "✅ **Thank you for your order!**\nPlease check your DMs for your card details."
-        )
-
-    admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
-    if admin_channel:
-        guild = admin_channel.guild
-        seller_role = guild.get_role(SELLER_ROLE_ID)
-        role_mention = seller_role.mention if seller_role else "@here"
-        embed_warn = discord.Embed(
-            title="⚠️ VC DISPENSED – USE WITHIN 2 HOURS",
-            description=f"Card: `{vc_data['card']}`\nExpiry: `{vc_data['expiry']}`\nUser: <@{user_id}>\nExpires at {expiry_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
-            color=discord.Color.orange()
-        )
-        await admin_channel.send(content=f"{role_mention}", embed=embed_warn)
-
-    return True
 
 # ----- Send unmatched alert -----
 async def send_unmatched_alert(payer_email: str, txn_id: str, amount: str):
@@ -510,10 +520,12 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
         )
 
         followup_msg = await interaction.followup.send(content=content, ephemeral=True)
+        print(f"📤 Sent followup: msg_id={followup_msg.id}, token={interaction.token[:20]}...")
 
         pending[purchase_id]["followup_msg_id"] = followup_msg.id
         pending[purchase_id]["followup_token"] = interaction.token
         save_pending(pending)
+        print(f"✅ Stored followup info for purchase {purchase_id}")
 
 # ----- Store Button -----
 class StoreView(ui.View):
@@ -595,6 +607,7 @@ def ipn():
 
             if matched_purchase_id and matched_user_id:
                 print(f"✅ Found matching email: {payer_email} -> User {matched_user_id}")
+                print(f"🔑 token: {token[:20] if token else 'None'}..., msg_id: {msg_id}")
                 del pending[matched_purchase_id]
                 save_pending(pending)
                 asyncio.run_coroutine_threadsafe(dispense_vc(matched_user_id, token, msg_id), bot.loop)
