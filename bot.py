@@ -242,9 +242,15 @@ async def on_ready():
             color=discord.Color.gold()
         )
         embed.set_footer(text="Cards expire 2 hours after delivery.")
-        await channel.send(embed=embed, view=StoreView())
+        try:
+            await channel.send(embed=embed, view=StoreView())
+            print("✅ Store message sent successfully!")
+        except discord.Forbidden:
+            print("❌ Missing permissions to send the store embed. Please invite the bot with Administrator or check channel permissions.")
+        except Exception as e:
+            print(f"❌ Unexpected error sending store: {e}")
     else:
-        print(f"❌ Store channel {STORE_CHANNEL_ID} not found.")
+        print(f"❌ Store channel {STORE_CHANNEL_ID} not found. Check the ID.")
 
     bot.loop.create_task(expiry_watcher())
     bot.loop.create_task(timer_updater())
