@@ -465,8 +465,38 @@ async def send_unmatched_alert(payer_email: str, txn_id: str, amount: str):
         except:
             pass
 
-# ----- Send wrong amount alert -----
-async def send_wrong_amount_alert(payer_email: str, txn_id: str, amount: str):
+# ----- Wrong amount handler -----
+async def handle_wrong_amount(user_id: int, payer_email: str, txn_id: str, amount: str, token: str = None, msg_id: int = None):
+    """Notify user and admin about wrong amount, remove pending entry."""
+    # Notify user via DM
+    try:
+        user = await bot.fetch_user(user_id)
+        if user:
+            embed = discord.Embed(
+                title="⚠️ Wrong Payment Amount",
+                description=(
+                    f"You sent **£{amount}** but the required amount is **£1.00**.\n\n"
+                    "Your purchase has been cancelled. Please send the correct amount (£1.00) to proceed.\n"
+                    "If you believe this is a mistake, contact support."
+                ),
+                color=discord.Color.red()
+            )
+            await user.send(embed=embed)
+            print(f"✅ Wrong amount DM sent to user {user_id}")
+    except:
+        pass
+
+    # Update ephemeral followup if we have token and msg_id
+    if token and msg_id:
+        await edit_followup(
+            token,
+            msg_id,
+            "❌ **Payment Failed – Wrong Amount**\n"
+            f"You sent **£{amount}** but the required amount is **£1.00**.\n"
+            "Please try again with the correct amount."
+        )
+
+    # Admin alert
     admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
     if admin_channel:
         try:
@@ -477,8 +507,8 @@ async def send_wrong_amount_alert(payer_email: str, txn_id: str, amount: str):
                     f"**Transaction ID:** {txn_id}\n"
                     f"**Amount Received:** £{amount}\n"
                     f"**Expected:** £1.00\n"
-                    f"This payment was not £1.00 and has been ignored.\n"
-                    f"Buyer may need a refund."
+                    f"User: <@{user_id}>\n"
+                    "Payment ignored and user notified."
                 ),
                 color=discord.Color.red()
             )
@@ -571,12 +601,13 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
 
         await interaction.response.defer(ephemeral=True, thinking=False)
 
-        paypal_username = PAYPAL_EMAIL.split('@')[0]
+        # No PayPal.me link – just show email and instructions
         content = (
             f"💳 **Complete Your Payment**\n\n"
             f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
-            f"**2.** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
-            f"**3.** After payment, this message will update automatically."
+            f"   - Copy this email and paste it into PayPal.\n"
+            f"   - **DO NOT use PayPal.me** – it doesn't work.\n"
+            f"**2.** After sending, this message will update automatically."
         )
 
         followup_msg = await interaction.followup.send(content=content, ephemeral=True)
@@ -629,8 +660,9 @@ class StoreView(ui.View):
                 "**2. Read and agree to the Terms & Conditions.**\n"
                 "**3. Enter your PayPal email** – this **must match** the email you will use to send the payment.\n"
                 "**4. Send exactly £1.00** to the PayPal address shown.\n"
-                "   - You can either click the PayPal.me link or copy the email manually.\n"
-                "   - **IMPORTANT:** If you send a different amount, your payment will be ignored and you may not receive a card or a refund.\n"
+                "   - Copy the email and paste it into PayPal.\n"
+                "   - **DO NOT use PayPal.me** – it doesn't work reliably.\n"
+                "   - **IMPORTANT:** If you send a different amount, your payment will be ignored and you will be notified.\n"
                 "**5. Once payment is confirmed**, the card will be sent to your DMs automatically.\n"
                 "**6. Use the card within 2 hours** – it will be terminated after that.\n\n"
                 "⚠️ **Please double-check your email and amount before sending!**"
@@ -682,11 +714,31 @@ def ipn():
             except:
                 amt = 0.0
             if amt != 1.00:
-                print(f"⚠️ Amount is {amount}, not £1.00 – ignoring and alerting admin.")
-                asyncio.run_coroutine_threadsafe(
-                    send_wrong_amount_alert(payer_email, txn_id, amount),
-                    bot.loop
-                )
+                print(f"⚠️ Amount is {amount}, not £1.00 – handling wrong amount.")
+                # Find the pending entry by email
+                pending = load_pending()
+                matched_user_id = None
+                token = None
+                msg_id = None
+                for purchase_id, data in pending.items():
+                    if data.get("payer_email", "").strip().lower() == payer_email:
+                        matched_user_id = data.get("user_id")
+                        token = data.get("followup_token")
+                        msg_id = data.get("followup_msg_id")
+                        # Remove the pending entry
+                        del pending[purchase_id]
+                        save_pending(pending)
+                        break
+                if matched_user_id:
+                    asyncio.run_coroutine_threadsafe(
+                        handle_wrong_amount(matched_user_id, payer_email, txn_id, amount, token, msg_id),
+                        bot.loop
+                    )
+                else:
+                    asyncio.run_coroutine_threadsafe(
+                        send_wrong_amount_alert(payer_email, txn_id, amount),
+                        bot.loop
+                    )
                 return f"OK - Wrong amount {amount}", 200
 
             print("✅ Payment Completed & Amount verified")
