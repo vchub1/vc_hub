@@ -249,6 +249,15 @@ async def on_ready():
     bot.loop.create_task(expiry_watcher())
     bot.loop.create_task(timer_updater())
 
+# ----- TEST: Simple ping command to check permissions -----
+@bot.event
+async def on_message(message):
+    # Ignore messages from the bot itself
+    if message.author == bot.user:
+        return
+    if message.content == "!ping":
+        await message.channel.send("Pong! Bot can send messages.")
+
 # ----- Main -----
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
