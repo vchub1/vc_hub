@@ -89,7 +89,6 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
-tree = app_commands.CommandTree(bot)
 
 # ----- Helper: Generate progress embed -----
 def progress_embed(percent: int, title: str, description: str, color=discord.Color.blue()):
@@ -690,12 +689,11 @@ class StoreView(ui.View):
         embed.set_footer(text="We're here to help – just ask!")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ----- SLASH COMMAND: /say -----
-@tree.command(name="say", description="Send a message via the bot to a specified channel")
+# ----- SLASH COMMAND: /say (using bot.tree) -----
+@bot.tree.command(name="say", description="Send a message via the bot to a specified channel")
 @app_commands.default_permissions(manage_messages=True)
 @app_commands.describe(message="The message to send", channel_id="The ID of the channel to send to")
 async def say(interaction: discord.Interaction, message: str, channel_id: str):
-    """Send a clean embed to any channel (admin only)."""
     try:
         channel_id_int = int(channel_id)
     except ValueError:
@@ -813,7 +811,7 @@ def ipn():
                 del pending[matched_purchase_id]
                 save_pending(pending)
 
-                # Update progress to 50% (payment received)
+                # Update progress to 50%
                 if token and msg_id:
                     embed = progress_embed(
                         50,
@@ -852,7 +850,7 @@ async def on_ready():
     print(f"Logged in as {bot.user}")
     
     # Sync slash commands
-    await tree.sync()
+    await bot.tree.sync()
     print("✅ Slash commands synced.")
     
     channel = bot.get_channel(STORE_CHANNEL_ID)
