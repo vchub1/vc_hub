@@ -201,20 +201,43 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
         embed.set_footer(text="The code is unique to you – don't share it.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ----- Flask IPN Server -----
+# ----- Flask IPN Server (UPDATED) -----
 app_flask = Flask(__name__)
 
 @app_flask.route("/ipn", methods=["POST"])
 def ipn():
     data = request.form.to_dict()
+    print("📥 IPN received!")
+    print("📋 Full data:", data)
+
+    # Log the important bits
+    payment_status = data.get("payment_status")
+    invoice_id = data.get("custom")
+    txn_id = data.get("txn_id")
+    payer_email = data.get("payer_email")
+    print(f"🔑 Payment Status: {payment_status}")
+    print(f"🔑 Invoice ID (custom): {invoice_id}")
+    print(f"🔑 Transaction ID: {txn_id}")
+    print(f"🔑 Payer Email: {payer_email}")
+
     # Verify IPN with PayPal (LIVE)
     verify_url = "https://www.paypal.com/cgi-bin/webscr"
     verify_data = data.copy()
     verify_data["cmd"] = "_notify-validate"
-    resp = requests.post(verify_url, data=verify_data)
+    
+    try:
+        resp = requests.post(verify_url, data=verify_data, timeout=10)
+        print(f"✅ PayPal verification response: {resp.text[:100]}...")
+    except Exception as e:
+        print(f"❌ Verification request failed: {e}")
+        return "Verification failed", 500
+
     if resp.text == "VERIFIED":
-        if data.get("payment_status") == "Completed":
-            invoice_id = data.get("custom")
+        print("✅ IPN verified successfully")
+        
+        # Only dispense on Completed
+        if payment_status == "Completed":
+            print("✅ Payment status: Completed")
             if invoice_id and invoice_id in load_pending():
                 pending = load_pending()
                 user_id_str = pending.pop(invoice_id)
@@ -222,7 +245,15 @@ def ipn():
                 user_id = int(user_id_str)
                 asyncio.run_coroutine_threadsafe(dispense_vc(user_id), bot.loop)
                 return "OK", 200
-    return "Invalid", 400
+            else:
+                print(f"❌ Invoice ID '{invoice_id}' not found in pending")
+                return "Invoice not found", 404
+        else:
+            print(f"📌 Payment status is '{payment_status}' – not dispensing (only Completed)")
+            return f"OK - Status: {payment_status}", 200
+    else:
+        print("❌ IPN verification failed")
+        return "Verification failed", 400
 
 def run_flask():
     app_flask.run(host="0.0.0.0", port=PORT)
@@ -258,7 +289,6 @@ async def on_ready():
 # ----- TEST: Simple ping command to check permissions -----
 @bot.event
 async def on_message(message):
-    # Ignore messages from the bot itself
     if message.author == bot.user:
         return
     if message.content == "!ping":
