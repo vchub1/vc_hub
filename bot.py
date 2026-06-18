@@ -37,7 +37,7 @@ def load_vc_pool():
         original_len = len(cards)
         cards = [c for c in cards if c.get("card") != "4111111111111111"]
         if len(cards) != original_len:
-            save_vc_pool(cards)  # Save cleaned list back to file
+            save_vc_pool(cards)
         return cards
 
 def save_vc_pool(cards):
@@ -73,13 +73,13 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @commands.has_permissions(manage_messages=True)
 async def purge(ctx, amount: int = None):
     if amount is None:
-        await ctx.send("❌ Please specify a number of messages. Example: `!purge 50`", delete_after=5)
+        await ctx.send("❌ Please specify a number. Example: `!purge 50`", delete_after=5)
         return
     if amount < 1:
         await ctx.send("❌ Amount must be at least 1.", delete_after=5)
         return
     if amount > 1000:
-        await ctx.send("❌ You can't delete more than 1000 messages at once.", delete_after=5)
+        await ctx.send("❌ Can't delete more than 1000 messages.", delete_after=5)
         return
     try:
         deleted = await ctx.channel.purge(limit=amount + 1)
@@ -105,18 +105,42 @@ async def nuke(ctx):
     except Exception as e:
         await ctx.send(f"❌ Error: {e}", delete_after=5)
 
-# ----- Validation Helpers -----
+# ----- Improved Validation (more forgiving) -----
+def clean_card_number(raw: str) -> str:
+    # Remove spaces, dashes, and any non-digit characters
+    return ''.join(filter(str.isdigit, raw))
+
 def validate_card(card: str) -> bool:
-    return card.isdigit() and len(card) <= 19
+    cleaned = clean_card_number(card)
+    return cleaned.isdigit() and 12 <= len(cleaned) <= 19  # Most cards are 15-16, but allow 12-19
 
 def validate_expiry(expiry: str) -> bool:
-    if len(expiry) != 5 or expiry[2] != '/':
+    # Remove spaces and slashes
+    cleaned = expiry.strip().replace('/', '').replace('-', '').replace(' ', '')
+    if len(cleaned) != 4:
         return False
-    month, year = expiry.split('/')
-    return month.isdigit() and year.isdigit() and 1 <= int(month) <= 12 and len(year) == 2
+    month = cleaned[:2]
+    year = cleaned[2:]
+    if not month.isdigit() or not year.isdigit():
+        return False
+    m = int(month)
+    y = int(year)
+    if m < 1 or m > 12:
+        return False
+    if y < 24 or y > 99:  # 2024-2099 (you can adjust)
+        return False
+    return True
 
 def validate_cvv(cvv: str) -> bool:
-    return cvv.isdigit() and len(cvv) == 3
+    cleaned = cvv.strip()
+    return cleaned.isdigit() and 3 <= len(cleaned) <= 4
+
+# ----- Format expiry for display -----
+def format_expiry(expiry: str) -> str:
+    cleaned = expiry.strip().replace('/', '').replace('-', '').replace(' ', '')
+    if len(cleaned) == 4:
+        return f"{cleaned[:2]}/{cleaned[2:]}"
+    return expiry
 
 # ----- Clear All Confirmation Modal -----
 class ClearConfirmModal(ui.Modal, title="🧹 Clear All Cards"):
@@ -173,42 +197,73 @@ class VCPanelView(ui.View):
 class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
     card_number = ui.TextInput(
         label="Card Number (max 19 digits, e.g., 1234567890123456789)",
-        placeholder="1234567890123456789",  # Clear 19‑digit example
+        placeholder="1234567890123456789",
         required=True,
         max_length=19
     )
     expiry = ui.TextInput(
-        label="Expiry Date (MM/YY, e.g., 11/30)",
+        label="Expiry Date (MM/YY, e.g., 11/30 or 1130)",
         placeholder="11/30",
         required=True,
         max_length=5
     )
     cvv = ui.TextInput(
-        label="CVV (3 digits, e.g., 123)",
+        label="CVV (3-4 digits, e.g., 123)",
         placeholder="123",
         required=True,
-        max_length=3
+        max_length=4
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not validate_card(self.card_number.value):
-            await interaction.response.send_message("❌ Invalid card number – must be digits only, max 19 characters.", ephemeral=True)
-            return
-        if not validate_expiry(self.expiry.value):
-            await interaction.response.send_message("❌ Invalid expiry format – must be MM/YY (e.g., 11/30).", ephemeral=True)
-            return
-        if not validate_cvv(self.cvv.value):
-            await interaction.response.send_message("❌ Invalid CVV – must be exactly 3 digits.", ephemeral=True)
+        # Clean up inputs
+        raw_card = self.card_number.value.strip()
+        raw_expiry = self.expiry.value.strip()
+        raw_cvv = self.cvv.value.strip()
+
+        # Validate card number (remove spaces/dashes first)
+        cleaned_card = clean_card_number(raw_card)
+        if not cleaned_card.isdigit() or not (12 <= len(cleaned_card) <= 19):
+            await interaction.response.send_message(
+                f"❌ Invalid card number – must be 12-19 digits. You entered `{raw_card}`.",
+                ephemeral=True
+            )
             return
 
+        # Validate expiry
+        if not validate_expiry(raw_expiry):
+            await interaction.response.send_message(
+                f"❌ Invalid expiry – must be MM/YY or MMYY (e.g., 11/30 or 1130). You entered `{raw_expiry}`.",
+                ephemeral=True
+            )
+            return
+
+        # Validate CVV
+        if not validate_cvv(raw_cvv):
+            await interaction.response.send_message(
+                f"❌ Invalid CVV – must be 3-4 digits. You entered `{raw_cvv}`.",
+                ephemeral=True
+            )
+            return
+
+        # Format everything nicely
+        formatted_card = cleaned_card
+        formatted_expiry = format_expiry(raw_expiry)
+        formatted_cvv = raw_cvv.strip()
+
+        # Add to stock
         cards = load_vc_pool()
         cards.append({
-            "card": self.card_number.value.strip(),
-            "expiry": self.expiry.value.strip(),
-            "cvv": self.cvv.value.strip()
+            "card": formatted_card,
+            "expiry": formatted_expiry,
+            "cvv": formatted_cvv
         })
         save_vc_pool(cards)
-        await interaction.response.send_message(f"✅ Card added: `{self.card_number.value} | Exp: {self.expiry.value} | CVV: {self.cvv.value}`", ephemeral=True)
+
+        print(f"✅ Card added: {formatted_card} | Exp: {formatted_expiry} | CVV: {formatted_cvv}")
+        await interaction.response.send_message(
+            f"✅ Card added: `{formatted_card} | Exp: {formatted_expiry} | CVV: {formatted_cvv}`",
+            ephemeral=True
+        )
 
 class RemoveCardModal(ui.Modal, title="🗑️ Remove Card"):
     index = ui.TextInput(
