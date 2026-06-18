@@ -20,14 +20,15 @@ STORE_CHANNEL_ID = int(os.getenv("STORE_CHANNEL_ID"))
 PAYPAL_EMAIL = os.getenv("PAYPAL_EMAIL")
 PORT = int(os.getenv("PORT", 5000))
 
-VC_FILE = "vcs.json"  # Now using JSON instead of txt
+VC_FILE = "vcs.json"
 PENDING_FILE = "pending.json"
 ACTIVE_FILE = "active.json"
 
 # ----------------------------
 
 def load_vc_pool():
-    if not os.path.exists(VC_FILE): return []
+    if not os.path.exists(VC_FILE):
+        return []
     with open(VC_FILE, "r") as f:
         data = json.load(f)
         return data.get("cards", [])
@@ -60,28 +61,57 @@ intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ----- Purge Command -----
+# ----- Purge/Nuke Commands -----
 @bot.command(name="purge")
 @commands.has_permissions(manage_messages=True)
-async def purge(ctx, amount: int):
-    """Delete messages in a channel (Admin only)"""
-    if amount > 1000:
-        await ctx.send("❌ Can't delete more than 1000 messages at once.", ephemeral=True)
+async def purge(ctx, amount: int = None):
+    """Delete messages in the channel (Admin only). Usage: !purge 50"""
+    if amount is None:
+        await ctx.send("❌ Please specify a number of messages to delete. Example: `!purge 50`", delete_after=5)
         return
-    deleted = await ctx.channel.purge(limit=amount + 1)
-    msg = await ctx.send(f"✅ Deleted {len(deleted) - 1} messages.")
-    await asyncio.sleep(3)
-    await msg.delete()
+    if amount < 1:
+        await ctx.send("❌ Amount must be at least 1.", delete_after=5)
+        return
+    if amount > 1000:
+        await ctx.send("❌ You can't delete more than 1000 messages at once.", delete_after=5)
+        return
+    try:
+        deleted = await ctx.channel.purge(limit=amount + 1)
+        msg = await ctx.send(f"✅ Deleted {len(deleted) - 1} messages.")
+        await asyncio.sleep(3)
+        await msg.delete()
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to delete messages.", delete_after=5)
+    except Exception as e:
+        await ctx.send(f"❌ Error: {e}", delete_after=5)
 
 @bot.command(name="nuke")
 @commands.has_permissions(manage_messages=True)
 async def nuke(ctx):
-    """Delete ALL messages in a channel (Admin only)"""
-    await ctx.send("⚠️ Nuking channel... this will delete ALL messages!")
-    deleted = await ctx.channel.purge(limit=10000)
-    msg = await ctx.send(f"💥 Channel nuked! Deleted {len(deleted)} messages.")
-    await asyncio.sleep(5)
-    await msg.delete()
+    """Delete ALL messages in the channel (Admin only)."""
+    try:
+        await ctx.send("⚠️ Nuking channel... this will delete ALL messages!", delete_after=3)
+        deleted = await ctx.channel.purge(limit=10000)
+        msg = await ctx.send(f"💥 Channel nuked! Deleted {len(deleted)} messages.")
+        await asyncio.sleep(5)
+        await msg.delete()
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to delete messages.", delete_after=5)
+    except Exception as e:
+        await ctx.send(f"❌ Error: {e}", delete_after=5)
+
+# ----- Validation Helpers -----
+def validate_card(card: str) -> bool:
+    return card.isdigit() and len(card) <= 19
+
+def validate_expiry(expiry: str) -> bool:
+    if len(expiry) != 5 or expiry[2] != '/':
+        return False
+    month, year = expiry.split('/')
+    return month.isdigit() and year.isdigit() and 1 <= int(month) <= 12 and len(year) == 2
+
+def validate_cvv(cvv: str) -> bool:
+    return cvv.isdigit() and len(cvv) == 3
 
 # ----- Admin VC Management Panel -----
 class VCPanelView(ui.View):
@@ -99,8 +129,6 @@ class VCPanelView(ui.View):
         if not cards:
             await interaction.response.send_message("📭 **No cards in stock.**", ephemeral=True)
             return
-        
-        # Show first 20 cards
         total = len(cards)
         display = cards[:20]
         embed = discord.Embed(
@@ -118,11 +146,22 @@ class VCPanelView(ui.View):
         await interaction.response.send_modal(modal)
 
 class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
-    card_number = ui.TextInput(label="Card Number", placeholder="4111111111111111", required=True)
-    expiry = ui.TextInput(label="Expiry Date", placeholder="MM/YY", required=True)
-    cvv = ui.TextInput(label="CVV", placeholder="123", required=True)
+    card_number = ui.TextInput(label="Card Number (max 19 digits)", placeholder="4111111111111111", required=True, max_length=19)
+    expiry = ui.TextInput(label="Expiry Date (MM/YY)", placeholder="11/30", required=True, max_length=5)
+    cvv = ui.TextInput(label="CVV (3 digits)", placeholder="123", required=True, max_length=3)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Validate inputs
+        if not validate_card(self.card_number.value):
+            await interaction.response.send_message("❌ Invalid card number – must be digits only, max 19 characters.", ephemeral=True)
+            return
+        if not validate_expiry(self.expiry.value):
+            await interaction.response.send_message("❌ Invalid expiry format – must be MM/YY (e.g., 11/30).", ephemeral=True)
+            return
+        if not validate_cvv(self.cvv.value):
+            await interaction.response.send_message("❌ Invalid CVV – must be exactly 3 digits.", ephemeral=True)
+            return
+
         cards = load_vc_pool()
         cards.append({
             "card": self.card_number.value.strip(),
@@ -152,7 +191,6 @@ class RemoveCardModal(ui.Modal, title="🗑️ Remove Card"):
 @bot.command(name="setup_vcpanel")
 @commands.has_permissions(administrator=True)
 async def setup_vcpanel(ctx):
-    """Post the VC management panel (Admin only)"""
     embed = discord.Embed(
         title="💳 VC Management Panel",
         description="Use the buttons below to manage your VC stock.",
@@ -170,7 +208,7 @@ async def dispense_vc(user_id: int):
             await admin_channel.send("🚨 **No VCs left!** Use `!setup_vcpanel` to add more.")
         return False
 
-    vc_data = cards.pop(0)  # Get first card
+    vc_data = cards.pop(0)
     save_vc_pool(cards)
 
     expiry_time = datetime.now(UTC) + timedelta(hours=2)
