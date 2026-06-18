@@ -114,6 +114,23 @@ async def dispense_vc(user_id: int):
 
     return True
 
+# ----- Send unmatched alert to admin channel (async) -----
+async def send_unmatched_alert(payer_email: str, txn_id: str):
+    admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
+    if admin_channel:
+        embed = discord.Embed(
+            title="⚠️ Unmatched Payment – Manual Review Needed",
+            description=(
+                f"**Payer Email:** {payer_email}\n"
+                f"**Transaction ID:** {txn_id}\n"
+                f"**Status:** Completed\n"
+                f"**This payment didn't match any pending purchase.**\n\n"
+                f"Please check your PayPal and manually dispense a card to this user if valid."
+            ),
+            color=discord.Color.orange()
+        )
+        await admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed)
+
 # ----- Expiry watcher -----
 async def expiry_watcher():
     await bot.wait_until_ready()
@@ -257,21 +274,11 @@ def ipn():
             else:
                 print(f"❌ No pending purchase found for email: {payer_email}")
                 print("📌 Sending manual approval request to admin channel...")
-                # Send manual approval to admin channel
-                admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
-                if admin_channel:
-                    embed = discord.Embed(
-                        title="⚠️ Unmatched Payment – Manual Review Needed",
-                        description=(
-                            f"**Payer Email:** {payer_email}\n"
-                            f"**Transaction ID:** {txn_id}\n"
-                            f"**Status:** Completed\n"
-                            f"**This payment didn't match any pending purchase.**\n\n"
-                            f"Please check your PayPal and manually dispense a card to this user if valid."
-                        ),
-                        color=discord.Color.orange()
-                    )
-                    await admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed)
+                # Schedule the async alert
+                asyncio.run_coroutine_threadsafe(
+                    send_unmatched_alert(payer_email, txn_id),
+                    bot.loop
+                )
                 return "OK - Unmatched", 200
         else:
             print(f"📌 Status: {payment_status} – not dispensing")
