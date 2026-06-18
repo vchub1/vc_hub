@@ -188,23 +188,36 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
         pending[invoice_id] = str(interaction.user.id)
         save_pending(pending)
 
+        # Generate PayPal payment link with custom field pre-filled
+        paypal_link = (
+            f"https://www.paypal.com/cgi-bin/webscr"
+            f"?cmd=_xclick"
+            f"&business={PAYPAL_EMAIL}"
+            f"&item_name=Virtual%20Card"
+            f"&amount=1.00"
+            f"&currency_code=GBP"
+            f"&custom={invoice_id}"
+            f"&no_shipping=1"
+            f"&no_note=1"
+            f"&return=https://discord.com"
+            f"&cancel_return=https://discord.com"
+        )
+
         embed = discord.Embed(
             title="💳 Complete Your Payment",
             description=(
-                f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
-                f"**2.** In the payment **note/message**, enter this code:\n"
-                f"`{invoice_id}`\n\n"
-                "**3.** After sending, the card will be automatically delivered to your DMs within 1 minute."
+                f"**Click the link below to pay £1 via PayPal:**\n"
+                f"[Pay Now]({paypal_link})\n\n"
+                "The card will be automatically delivered to your DMs within 1 minute."
             ),
             color=discord.Color.blue()
         )
-        embed.set_footer(text="The code is unique to you – don't share it.")
+        embed.set_footer(text="Your invoice ID is pre-filled – just pay!")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ----- Flask IPN Server (with Test Route) -----
+# ----- Flask IPN Server (Auto-dispense) -----
 app_flask = Flask(__name__)
 
-# Test route to verify the server is alive
 @app_flask.route("/test", methods=["GET"])
 def test():
     return "✅ Flask server is running!", 200
@@ -215,7 +228,6 @@ def ipn():
     print("📥 IPN received!")
     print("📋 Full data:", data)
 
-    # Log the important bits
     payment_status = data.get("payment_status")
     invoice_id = data.get("custom")
     txn_id = data.get("txn_id")
@@ -225,11 +237,10 @@ def ipn():
     print(f"🔑 Transaction ID: {txn_id}")
     print(f"🔑 Payer Email: {payer_email}")
 
-    # Verify IPN with PayPal (LIVE)
+    # Verify IPN with PayPal
     verify_url = "https://www.paypal.com/cgi-bin/webscr"
     verify_data = data.copy()
     verify_data["cmd"] = "_notify-validate"
-    
     try:
         resp = requests.post(verify_url, data=verify_data, timeout=10)
         print(f"✅ PayPal verification response: {resp.text[:100]}...")
@@ -239,8 +250,6 @@ def ipn():
 
     if resp.text == "VERIFIED":
         print("✅ IPN verified successfully")
-        
-        # Only dispense on Completed
         if payment_status == "Completed":
             print("✅ Payment status: Completed")
             if invoice_id and invoice_id in load_pending():
@@ -254,7 +263,7 @@ def ipn():
                 print(f"❌ Invoice ID '{invoice_id}' not found in pending")
                 return "Invoice not found", 404
         else:
-            print(f"📌 Payment status is '{payment_status}' – not dispensing (only Completed)")
+            print(f"📌 Payment status is '{payment_status}' – not dispensing")
             return f"OK - Status: {payment_status}", 200
     else:
         print("❌ IPN verification failed")
@@ -282,16 +291,16 @@ async def on_ready():
             await channel.send(embed=embed, view=StoreView())
             print("✅ Store message sent successfully!")
         except discord.Forbidden:
-            print("❌ Missing permissions to send the store embed. Please invite the bot with Administrator or check channel permissions.")
+            print("❌ Missing permissions to send the store embed.")
         except Exception as e:
             print(f"❌ Unexpected error sending store: {e}")
     else:
-        print(f"❌ Store channel {STORE_CHANNEL_ID} not found. Check the ID.")
+        print(f"❌ Store channel {STORE_CHANNEL_ID} not found.")
 
     bot.loop.create_task(expiry_watcher())
     bot.loop.create_task(timer_updater())
 
-# ----- TEST: Simple ping command to check permissions -----
+# ----- TEST: Simple ping command -----
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
