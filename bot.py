@@ -77,7 +77,7 @@ async def edit_followup(token: str, msg_id: int, content: str, embed=None):
     url = f"https://discord.com/api/v10/webhooks/{bot.user.id}/{token}/messages/{msg_id}"
     payload = {"content": content}
     if embed:
-        payload["embeds"] = [embed.to_dict()]
+        payload["embeds"] = [embed.to_dict() if hasattr(embed, 'to_dict') else embed]
     try:
         resp = requests.patch(url, json=payload)
         if resp.status_code == 200:
@@ -485,6 +485,7 @@ class TermsView(ui.View):
     async def disagree(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_message("❌ You must agree to the Terms & Conditions to purchase.", ephemeral=True)
 
+# ----- FIXED BuyModal -----
 class BuyModal(ui.Modal, title="💳 Purchase VC"):
     email = ui.TextInput(
         label="Your PayPal Email",
@@ -499,83 +500,26 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
             "user_id": interaction.user.id,
             "payer_email": self.email.value.strip().lower()
         }
-        save_pending(pending)
 
-        # Send the initial "processing" followup and store its ID and token
-        await interaction.response.defer(ephemeral=True, thinking=False)  # Defer to send followup later
-        followup_msg = await interaction.followup.send(
-            content="⏳ **Processing your payment...**\nWe're waiting for PayPal to confirm your payment.",
-            ephemeral=True
-        )
-        # Store the followup message ID and token in pending
-        pending[purchase_id]["followup_msg_id"] = followup_msg.id
-        pending[purchase_id]["followup_token"] = interaction.token
-        save_pending(pending)
+        # Defer the interaction so we can send a followup
+        await interaction.response.defer(ephemeral=True, thinking=False)
 
+        # Prepare the payment instructions
         paypal_username = PAYPAL_EMAIL.split('@')[0]
-
-        # Now send the payment instructions in a separate followup or the same? The user already sees the processing message. But we also need to give them the payment link. We can edit the followup to include instructions, but we want it to update later to thank you. So we'll send a second message? Actually we can combine: initially send a message with instructions, then later edit it to thank you. But we can't edit the content if we want to keep instructions. So we can send the instructions as a separate ephemeral message, or include them in the initial and then edit to thank you. The user wants the message to change from "send £1" to "thank you". So we should initially send the payment instructions, then later edit to thank you.
-
-        # We'll edit the followup to include instructions after defer.
-        await interaction.edit_original_response(
-            content=f"💳 **Complete Your Payment**\n\n"
-                    f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
-                    f"**2.** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
-                    f"**3.** After payment, this message will update automatically."
-        )
-        # But we already sent a followup, we need to edit that instead. Let's store the message ID and use edit_followup later. Actually we can use interaction.edit_original_response to edit the initial response (since we deferred). That's easier.
-
-        # Let's redo: we defer, send an ephemeral message with the instructions (which will be the one we edit later). We don't need a separate followup.
-        # We'll just use the original response.
-
-        # But we already used await interaction.response.defer(ephemeral=True, thinking=False) and then sent the followup. We can edit the original response with interaction.edit_original_response, but that's for the original reply, not the followup. We can just send the initial message as the instructions and later edit it.
-
-        # Let's simplify: Instead of deferring, we send a modal response that includes the instructions. But we need the message to be editable later. So we'll send an ephemeral message after defer.
-
-        # I'll restructure: In on_submit, we defer, then send an ephemeral message with instructions, and store its ID and token. Then later we edit it.
-
-        # The above code already does that: it sends a followup with the "processing" message, but we want the instructions. So we'll change the followup to include instructions.
-
-        # Actually we can just send the instructions as the followup, and later edit it.
-
-        # Let's remove the "processing" and just send the instructions directly, then later edit to thank you.
-
-        # I'll rewrite the on_submit to send the instructions as the followup, and store its ID.
-
-        # Since we already deferred, we can send the followup with instructions.
-
-        await interaction.followup.edit(
-            message_id=followup_msg.id,
-            content=f"💳 **Complete Your Payment**\n\n"
-                    f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
-                    f"**2.** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
-                    f"**3.** After payment, this message will update automatically."
+        content = (
+            f"💳 **Complete Your Payment**\n\n"
+            f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
+            f"**2.** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
+            f"**3.** After payment, this message will update automatically."
         )
 
-        # But we already sent the "processing" message; we can edit it to instructions.
-        # We stored the followup_msg.id and token, so we can edit later.
+        # Send the ephemeral followup message
+        followup_msg = await interaction.followup.send(content=content, ephemeral=True)
 
-        # Actually, we can just send the instructions as the initial followup and not send a separate "processing" message.
-        # Let's just send the instructions directly, and store the message ID for later editing.
-
-        # We'll change the code: after defer, we send the instructions as a followup, store its ID and token.
-
-        # But we already have the processing message sent. We can edit that to instructions now, and then later edit to thank you.
-
-        await interaction.followup.edit(
-            message_id=followup_msg.id,
-            content=f"💳 **Complete Your Payment**\n\n"
-                    f"**1.** Send **£1** to PayPal: `{PAYPAL_EMAIL}`\n"
-                    f"**2.** Click here: [PayPal.me/{paypal_username}](https://paypal.me/{paypal_username}/1)\n\n"
-                    f"**3.** After payment, this message will update automatically."
-        )
-
-        # Now store the token and msg_id in pending
+        # Store the message ID and token so we can edit it later
         pending[purchase_id]["followup_msg_id"] = followup_msg.id
         pending[purchase_id]["followup_token"] = interaction.token
         save_pending(pending)
-
-        # Done, the user sees the instructions, and we'll edit later.
 
 # ----- Store Button -----
 class StoreView(ui.View):
