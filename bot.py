@@ -321,7 +321,7 @@ async def setup_vcpanel(ctx):
     await ctx.send(embed=embed, view=VCPanelView())
     await ctx.message.delete()
 
-# ----- Dispense VC (with debug logging) -----
+# ----- Dispense VC (with admin alert error handling) -----
 async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
     print(f"🔍 dispense_vc called: user_id={user_id}, token={'present' if token else 'None'}, msg_id={msg_id}")
     try:
@@ -331,7 +331,10 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
         if not cards:
             admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
             if admin_channel:
-                await admin_channel.send("🚨 **No VCs left!** Use `!setup_vcpanel` to add more.")
+                try:
+                    await admin_channel.send("🚨 **No VCs left!** Use `!setup_vcpanel` to add more.")
+                except:
+                    pass
             print("❌ No cards in stock – cannot dispense")
             return False
 
@@ -346,7 +349,6 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
         dm_channel_id = None
         dm_message_id = None
         if user:
-            # Card details embed
             embed_card = discord.Embed(
                 title="✨ Your Virtual Card",
                 description=f"**Card:** `{vc_data['card']}`\n**Expiry:** `{vc_data['expiry']}`\n**CVV:** `{vc_data['cvv']}`",
@@ -355,7 +357,6 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
             embed_card.add_field(name="⏰ Time Remaining", value="2 hours (updates live)", inline=False)
             embed_card.set_footer(text="This card will be terminated after 2 hours.")
 
-            # Thank you embed (DM)
             embed_confirm = discord.Embed(
                 title="✅ Thank You for Your Order!",
                 description="Your Virtual Card has been sent to your DMs above.\n\n"
@@ -386,7 +387,6 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
         }
         save_active(active)
 
-        # Update the ephemeral followup message if we have token and msg_id
         if token and msg_id:
             print(f"🔄 Updating ephemeral followup with token {token[:10]}... and msg_id {msg_id}")
             await edit_followup(
@@ -397,17 +397,26 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
         else:
             print("⚠️ No token/msg_id – skipping ephemeral update")
 
+        # --- Admin channel alert (with error handling) ---
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
-            guild = admin_channel.guild
-            seller_role = guild.get_role(SELLER_ROLE_ID)
-            role_mention = seller_role.mention if seller_role else "@here"
-            embed_warn = discord.Embed(
-                title="⚠️ VC DISPENSED – USE WITHIN 2 HOURS",
-                description=f"Card: `{vc_data['card']}`\nExpiry: `{vc_data['expiry']}`\nUser: <@{user_id}>\nExpires at {expiry_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
-                color=discord.Color.orange()
-            )
-            await admin_channel.send(content=f"{role_mention}", embed=embed_warn)
+            try:
+                guild = admin_channel.guild
+                seller_role = guild.get_role(SELLER_ROLE_ID)
+                role_mention = seller_role.mention if seller_role else "@here"
+                embed_warn = discord.Embed(
+                    title="⚠️ VC DISPENSED – USE WITHIN 2 HOURS",
+                    description=f"Card: `{vc_data['card']}`\nExpiry: `{vc_data['expiry']}`\nUser: <@{user_id}>\nExpires at {expiry_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                    color=discord.Color.orange()
+                )
+                await admin_channel.send(content=f"{role_mention}", embed=embed_warn)
+                print("✅ Admin alert sent")
+            except discord.Forbidden:
+                print(f"❌ No permission to send admin alert in channel {ADMIN_CHANNEL_ID} – check bot permissions.")
+            except Exception as e:
+                print(f"❌ Failed to send admin alert: {e}")
+        else:
+            print(f"❌ Admin channel {ADMIN_CHANNEL_ID} not found.")
 
         print("✅ dispense_vc completed successfully")
         return True
@@ -421,18 +430,21 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
 async def send_unmatched_alert(payer_email: str, txn_id: str, amount: str):
     admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
     if admin_channel:
-        embed = discord.Embed(
-            title="⚠️ Unmatched Payment – Manual Review",
-            description=(
-                f"**Payer Email:** {payer_email}\n"
-                f"**Transaction ID:** {txn_id}\n"
-                f"**Amount:** £{amount}\n"
-                f"**Status:** Completed\n"
-                f"This payment didn't match any pending purchase."
-            ),
-            color=discord.Color.orange()
-        )
-        await admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed)
+        try:
+            embed = discord.Embed(
+                title="⚠️ Unmatched Payment – Manual Review",
+                description=(
+                    f"**Payer Email:** {payer_email}\n"
+                    f"**Transaction ID:** {txn_id}\n"
+                    f"**Amount:** £{amount}\n"
+                    f"**Status:** Completed\n"
+                    f"This payment didn't match any pending purchase."
+                ),
+                color=discord.Color.orange()
+            )
+            await admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed)
+        except:
+            pass
 
 # ----- Expiry watcher -----
 async def expiry_watcher():
@@ -445,12 +457,15 @@ async def expiry_watcher():
             if datetime.now(UTC) >= exp:
                 admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
                 if admin_channel:
-                    seller_role = admin_channel.guild.get_role(SELLER_ROLE_ID)
-                    role_mention = seller_role.mention if seller_role else "@here"
-                    await admin_channel.send(
-                        f"⏰ {role_mention} **TERMINATE THIS VC NOW!**\n"
-                        f"Card: `{card}`\nUser: <@{data['user_id']}>\nExpired at {exp.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-                    )
+                    try:
+                        seller_role = admin_channel.guild.get_role(SELLER_ROLE_ID)
+                        role_mention = seller_role.mention if seller_role else "@here"
+                        await admin_channel.send(
+                            f"⏰ {role_mention} **TERMINATE THIS VC NOW!**\n"
+                            f"Card: `{card}`\nUser: <@{data['user_id']}>\nExpired at {exp.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        )
+                    except:
+                        pass
                 expired.append(card)
         if expired:
             for card in expired:
@@ -682,14 +697,11 @@ async def on_ready():
 @bot.command(name="test_dispense")
 @commands.has_permissions(administrator=True)
 async def test_dispense(ctx, member: discord.Member = None):
-    """Admin command to manually test dispense. Usage: !test_dispense @user"""
     if member is None:
         await ctx.send("❌ Please mention a user: `!test_dispense @user`", delete_after=10)
         return
-    
     print(f"🧪 Manual test_dispense triggered for {member.id}")
     await ctx.send(f"⏳ Attempting to dispense a card to {member.mention}...", delete_after=10)
-    
     try:
         result = await dispense_vc(member.id, None, None)
         if result:
