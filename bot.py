@@ -207,8 +207,8 @@ app_flask = Flask(__name__)
 @app_flask.route("/ipn", methods=["POST"])
 def ipn():
     data = request.form.to_dict()
-    # Verify IPN with PayPal
-    verify_url = "https://www.sandbox.paypal.com/cgi-bin/webscr"  # change to "https://www.paypal.com" for live
+    # Verify IPN with PayPal (LIVE)
+    verify_url = "https://www.paypal.com/cgi-bin/webscr"
     verify_data = data.copy()
     verify_data["cmd"] = "_notify-validate"
     resp = requests.post(verify_url, data=verify_data)
