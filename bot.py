@@ -3,7 +3,7 @@ from discord import ui
 import asyncio
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 import secrets
 import requests
 from flask import Flask, request
@@ -69,7 +69,7 @@ async def dispense_vc(user_id: int):
     vc = pool.pop()
     save_vc_pool(pool)
 
-    expiry_time = datetime.utcnow() + timedelta(hours=2)
+    expiry_time = datetime.now(UTC) + timedelta(hours=2)
     expiry_str = expiry_time.isoformat()
 
     user = await bot.fetch_user(user_id)
@@ -115,7 +115,7 @@ async def dispense_vc(user_id: int):
     return True
 
 # ----- Send unmatched alert to admin channel (async) -----
-async def send_unmatched_alert(payer_email: str, txn_id: str):
+async def send_unmatched_alert(payer_email: str, txn_id: str, amount: str):
     admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
     if admin_channel:
         embed = discord.Embed(
@@ -123,6 +123,7 @@ async def send_unmatched_alert(payer_email: str, txn_id: str):
             description=(
                 f"**Payer Email:** {payer_email}\n"
                 f"**Transaction ID:** {txn_id}\n"
+                f"**Amount:** £{amount}\n"
                 f"**Status:** Completed\n"
                 f"**This payment didn't match any pending purchase.**\n\n"
                 f"Please check your PayPal and manually dispense a card to this user if valid."
@@ -139,7 +140,7 @@ async def expiry_watcher():
         expired = []
         for vc, data in active.items():
             exp = datetime.fromisoformat(data["expires_at"])
-            if datetime.utcnow() >= exp:
+            if datetime.now(UTC) >= exp:
                 admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
                 if admin_channel:
                     seller_role = admin_channel.guild.get_role(SELLER_ROLE_ID)
@@ -162,7 +163,7 @@ async def timer_updater():
         active = load_active()
         for vc, data in active.items():
             exp = datetime.fromisoformat(data["expires_at"])
-            remaining = exp - datetime.utcnow()
+            remaining = exp - datetime.now(UTC)
             if remaining.total_seconds() <= 0:
                 continue
             dm_channel_id = data.get("dm_channel_id")
@@ -234,9 +235,11 @@ def ipn():
     payment_status = data.get("payment_status")
     payer_email = data.get("payer_email", "").strip().lower()
     txn_id = data.get("txn_id")
+    amount = data.get("mc_gross") or data.get("amount") or "0.00"
     print(f"🔑 Payment Status: {payment_status}")
     print(f"🔑 Payer Email: {payer_email}")
     print(f"🔑 Transaction ID: {txn_id}")
+    print(f"🔑 Amount: {amount}")
 
     # Verify IPN
     verify_url = "https://www.paypal.com/cgi-bin/webscr"
@@ -252,7 +255,12 @@ def ipn():
     if resp.text == "VERIFIED":
         print("✅ IPN verified")
         if payment_status == "Completed":
-            print("✅ Payment Completed")
+            # Safety check: amount must be exactly 1.00 (or 1)
+            if float(amount) != 1.00:
+                print(f"⚠️ Amount is {amount}, not £1.00 – ignoring.")
+                return f"OK - Amount {amount}", 200
+
+            print("✅ Payment Completed & Amount verified")
 
             # Try to match by email
             pending = load_pending()
@@ -274,9 +282,8 @@ def ipn():
             else:
                 print(f"❌ No pending purchase found for email: {payer_email}")
                 print("📌 Sending manual approval request to admin channel...")
-                # Schedule the async alert
                 asyncio.run_coroutine_threadsafe(
-                    send_unmatched_alert(payer_email, txn_id),
+                    send_unmatched_alert(payer_email, txn_id, amount),
                     bot.loop
                 )
                 return "OK - Unmatched", 200
