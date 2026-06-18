@@ -26,7 +26,6 @@ VC_FILE = "vcs.json"
 PENDING_FILE = "pending.json"
 ACTIVE_FILE = "active.json"
 
-# ----- Use absolute paths to avoid Railway file system issues -----
 BASE_DIR = Path(__file__).parent.absolute()
 
 def get_vc_file():
@@ -38,7 +37,6 @@ def get_pending_file():
 def get_active_file():
     return os.path.join(BASE_DIR, ACTIVE_FILE)
 
-# ----- File helpers with absolute paths -----
 def load_vc_pool():
     file_path = get_vc_file()
     if not os.path.exists(file_path):
@@ -467,6 +465,27 @@ async def send_unmatched_alert(payer_email: str, txn_id: str, amount: str):
         except:
             pass
 
+# ----- Send wrong amount alert -----
+async def send_wrong_amount_alert(payer_email: str, txn_id: str, amount: str):
+    admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
+    if admin_channel:
+        try:
+            embed = discord.Embed(
+                title="⚠️ Wrong Payment Amount Received",
+                description=(
+                    f"**Payer Email:** {payer_email}\n"
+                    f"**Transaction ID:** {txn_id}\n"
+                    f"**Amount Received:** £{amount}\n"
+                    f"**Expected:** £1.00\n"
+                    f"This payment was not £1.00 and has been ignored.\n"
+                    f"Buyer may need a refund."
+                ),
+                color=discord.Color.red()
+            )
+            await admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed)
+        except:
+            pass
+
 # ----- Expiry watcher -----
 async def expiry_watcher():
     await bot.wait_until_ready()
@@ -538,7 +557,7 @@ class TermsView(ui.View):
 class BuyModal(ui.Modal, title="💳 Purchase VC"):
     email = ui.TextInput(
         label="Your PayPal Email",
-        placeholder="The email you'll use to pay",
+        placeholder="Enter the email you'll use to pay (must match)",
         required=True
     )
 
@@ -568,13 +587,22 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
         save_pending(pending)
         print(f"✅ Stored followup info for purchase {purchase_id}")
 
-# ----- Store Button -----
+# ----- Store Button (with How to Use and Stock Check) -----
 class StoreView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @ui.button(label="💳 Purchase Virtual Card", style=discord.ButtonStyle.primary, emoji="✨", custom_id="buy")
+    @ui.button(label="💳 Purchase Virtual Card", style=discord.ButtonStyle.primary, emoji="✨", row=0)
     async def buy(self, interaction: discord.Interaction, button: ui.Button):
+        # Check if there are cards in stock
+        cards = load_vc_pool()
+        if not cards:
+            await interaction.response.send_message(
+                "❌ **Error: Unable to purchase** – there is no stock available at the moment. Please wait for restock.",
+                ephemeral=True
+            )
+            return
+        # Show T&C
         embed = discord.Embed(
             title="📋 Terms & Conditions",
             description=(
@@ -590,6 +618,27 @@ class StoreView(ui.View):
         embed.set_footer(text="You must agree to proceed.")
         view = TermsView()
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @ui.button(label="ℹ️ How to Use", style=discord.ButtonStyle.secondary, emoji="📖", row=0)
+    async def how_to_use(self, interaction: discord.Interaction, button: ui.Button):
+        embed = discord.Embed(
+            title="📖 How to Purchase a Virtual Card",
+            description=(
+                "Follow these steps to complete your purchase:\n\n"
+                "**1. Click the 'Purchase Virtual Card' button.**\n"
+                "**2. Read and agree to the Terms & Conditions.**\n"
+                "**3. Enter your PayPal email** – this **must match** the email you will use to send the payment.\n"
+                "**4. Send exactly £1.00** to the PayPal address shown.\n"
+                "   - You can either click the PayPal.me link or copy the email manually.\n"
+                "   - **IMPORTANT:** If you send a different amount, your payment will be ignored and you may not receive a card or a refund.\n"
+                "**5. Once payment is confirmed**, the card will be sent to your DMs automatically.\n"
+                "**6. Use the card within 2 hours** – it will be terminated after that.\n\n"
+                "⚠️ **Please double-check your email and amount before sending!**"
+            ),
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text="If you have issues, contact support.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ----- Flask IPN Server -----
 app_flask = Flask(__name__)
@@ -613,6 +662,7 @@ def ipn():
     print(f"🔑 Transaction ID: {txn_id}")
     print(f"🔑 Amount: {amount}")
 
+    # Verify IPN
     verify_url = "https://www.paypal.com/cgi-bin/webscr"
     verify_data = data.copy()
     verify_data["cmd"] = "_notify-validate"
@@ -626,14 +676,23 @@ def ipn():
     if resp.text == "VERIFIED":
         print("✅ IPN verified")
         if payment_status == "Completed":
-            if float(amount) != 1.00:
-                print(f"⚠️ Amount is {amount}, not £1.00 – ignoring.")
-                return f"OK - Amount {amount}", 200
+            # Check amount
+            try:
+                amt = float(amount)
+            except:
+                amt = 0.0
+            if amt != 1.00:
+                print(f"⚠️ Amount is {amount}, not £1.00 – ignoring and alerting admin.")
+                asyncio.run_coroutine_threadsafe(
+                    send_wrong_amount_alert(payer_email, txn_id, amount),
+                    bot.loop
+                )
+                return f"OK - Wrong amount {amount}", 200
 
             print("✅ Payment Completed & Amount verified")
 
             pending = load_pending()
-            print(f"📋 Pending file contents: {pending}")  # Debug log
+            print(f"📋 Pending file contents: {pending}")
 
             matched_purchase_id = None
             matched_user_id = None
