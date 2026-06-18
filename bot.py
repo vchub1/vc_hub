@@ -109,7 +109,7 @@ async def nuke(ctx):
     except Exception as e:
         await ctx.send(f"❌ Error: {e}", delete_after=5)
 
-# ----- Improved Validation (more forgiving) -----
+# ----- Validation Helpers -----
 def clean_card_number(raw: str) -> str:
     return ''.join(filter(str.isdigit, raw))
 
@@ -129,7 +129,7 @@ def validate_expiry(expiry: str) -> bool:
     y = int(year)
     if m < 1 or m > 12:
         return False
-    if y < 24 or y > 99:  # Accept 2024-2099
+    if y < 24 or y > 99:
         return False
     return True
 
@@ -165,8 +165,12 @@ class VCPanelView(ui.View):
 
     @ui.button(label="➕ Add Cards", style=discord.ButtonStyle.success, emoji="➕", row=0)
     async def add_card(self, interaction: discord.Interaction, button: ui.Button):
-        modal = AddCardModal()
-        await interaction.response.send_modal(modal)
+        try:
+            modal = AddCardModal()
+            await interaction.response.send_modal(modal)
+        except Exception as e:
+            print(f"❌ Error sending Add Card modal: {e}")
+            await interaction.response.send_message(f"❌ Failed to open modal: {e}", ephemeral=True)
 
     @ui.button(label="📋 View Cards", style=discord.ButtonStyle.primary, emoji="📋", row=0)
     async def view_cards(self, interaction: discord.Interaction, button: ui.Button):
@@ -197,19 +201,19 @@ class VCPanelView(ui.View):
 
 class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
     card_number = ui.TextInput(
-        label="Card Number (max 19 digits, e.g., 1234567890123456789)",
+        label="Card Number (max 19 digits)",
         placeholder="1234567890123456789",
         required=True,
         max_length=19
     )
     expiry = ui.TextInput(
-        label="Expiry Date (MM/YY, e.g., 11/30 or 1130)",
+        label="Expiry Date (MM/YY)",
         placeholder="11/30",
         required=True,
         max_length=5
     )
     cvv = ui.TextInput(
-        label="CVV (3-4 digits, e.g., 123)",
+        label="CVV (3-4 digits)",
         placeholder="123",
         required=True,
         max_length=4
@@ -217,18 +221,17 @@ class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            # Clean inputs
             raw_card = self.card_number.value.strip()
             raw_expiry = self.expiry.value.strip()
             raw_cvv = self.cvv.value.strip()
 
-            print(f"📝 Add Card attempt: card={raw_card}, expiry={raw_expiry}, cvv={raw_cvv}")
+            print(f"📝 Add Card: {raw_card} | {raw_expiry} | {raw_cvv}")
 
-            # Validate card number
+            # Clean card number
             cleaned_card = clean_card_number(raw_card)
             if not cleaned_card.isdigit() or not (12 <= len(cleaned_card) <= 19):
                 await interaction.response.send_message(
-                    f"❌ Invalid card number – must be 12-19 digits. You entered `{raw_card}`.",
+                    f"❌ Invalid card – must be 12-19 digits. You entered: `{raw_card}`",
                     ephemeral=True
                 )
                 return
@@ -236,7 +239,7 @@ class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
             # Validate expiry
             if not validate_expiry(raw_expiry):
                 await interaction.response.send_message(
-                    f"❌ Invalid expiry – must be MM/YY or MMYY (e.g., 11/30 or 1130). You entered `{raw_expiry}`.",
+                    f"❌ Invalid expiry – use MM/YY (e.g., 11/30). You entered: `{raw_expiry}`",
                     ephemeral=True
                 )
                 return
@@ -244,17 +247,15 @@ class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
             # Validate CVV
             if not validate_cvv(raw_cvv):
                 await interaction.response.send_message(
-                    f"❌ Invalid CVV – must be 3-4 digits. You entered `{raw_cvv}`.",
+                    f"❌ Invalid CVV – must be 3-4 digits. You entered: `{raw_cvv}`",
                     ephemeral=True
                 )
                 return
 
-            # Format
             formatted_card = cleaned_card
             formatted_expiry = format_expiry(raw_expiry)
             formatted_cvv = raw_cvv.strip()
 
-            # Add to stock
             cards = load_vc_pool()
             cards.append({
                 "card": formatted_card,
@@ -263,7 +264,7 @@ class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
             })
             save_vc_pool(cards)
 
-            print(f"✅ Card added: {formatted_card} | Exp: {formatted_expiry} | CVV: {formatted_cvv}")
+            print(f"✅ Card added: {formatted_card} | {formatted_expiry} | {formatted_cvv}")
 
             await interaction.response.send_message(
                 f"✅ Card added: `{formatted_card} | Exp: {formatted_expiry} | CVV: {formatted_cvv}`",
@@ -271,14 +272,10 @@ class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
             )
 
         except Exception as e:
-            print(f"❌ Error in AddCardModal: {e}")
+            print(f"❌ AddCardModal error: {e}")
             try:
-                await interaction.response.send_message(
-                    f"❌ An error occurred while adding the card: {str(e)}",
-                    ephemeral=True
-                )
+                await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
             except:
-                # If we can't respond, it's already too late – but we log.
                 pass
 
 class RemoveCardModal(ui.Modal, title="🗑️ Remove Card"):
@@ -585,7 +582,6 @@ def run_flask():
 async def on_ready():
     print(f"Logged in as {bot.user}")
     
-    # Post store in STORE_CHANNEL_ID
     channel = bot.get_channel(STORE_CHANNEL_ID)
     if channel:
         embed = discord.Embed(
@@ -605,7 +601,6 @@ async def on_ready():
     else:
         print(f"❌ Store channel {STORE_CHANNEL_ID} not found.")
 
-    # Post VC Management Panel in specified channel
     panel_channel = bot.get_channel(1517019905696858273)
     if panel_channel:
         embed = discord.Embed(
