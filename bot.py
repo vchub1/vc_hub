@@ -73,7 +73,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ----- Helper to edit ephemeral followup -----
 async def edit_followup(token: str, msg_id: int, content: str, embed=None):
-    """Edit an ephemeral followup message using the interaction token."""
     url = f"https://discord.com/api/v10/webhooks/{bot.user.id}/{token}/messages/{msg_id}"
     payload = {"content": content}
     if embed:
@@ -485,7 +484,6 @@ class TermsView(ui.View):
     async def disagree(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_message("❌ You must agree to the Terms & Conditions to purchase.", ephemeral=True)
 
-# ----- FIXED BuyModal -----
 class BuyModal(ui.Modal, title="💳 Purchase VC"):
     email = ui.TextInput(
         label="Your PayPal Email",
@@ -501,10 +499,8 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
             "payer_email": self.email.value.strip().lower()
         }
 
-        # Defer the interaction so we can send a followup
         await interaction.response.defer(ephemeral=True, thinking=False)
 
-        # Prepare the payment instructions
         paypal_username = PAYPAL_EMAIL.split('@')[0]
         content = (
             f"💳 **Complete Your Payment**\n\n"
@@ -513,10 +509,8 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
             f"**3.** After payment, this message will update automatically."
         )
 
-        # Send the ephemeral followup message
         followup_msg = await interaction.followup.send(content=content, ephemeral=True)
 
-        # Store the message ID and token so we can edit it later
         pending[purchase_id]["followup_msg_id"] = followup_msg.id
         pending[purchase_id]["followup_token"] = interaction.token
         save_pending(pending)
