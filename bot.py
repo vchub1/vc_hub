@@ -41,6 +41,10 @@ STORE_CHANNEL_ID = int(os.getenv("STORE_CHANNEL_ID", 0))
 PAYPAL_EMAIL = os.getenv("PAYPAL_EMAIL", "")
 PORT = int(os.getenv("PORT", 5000))
 
+# New channel IDs (hardcoded for simplicity, or you can set them as env vars)
+TICKET_CHANNEL_ID = 1518420661335359759       # Lobby for ticket dropdown
+VCPANEL_CHANNEL_ID = 1518420853757313155      # Channel for VC management panel
+
 # Check required variables
 if not TOKEN:
     print("❌ BOT_TOKEN not set in environment variables. Please add it in Railway Variables.")
@@ -59,7 +63,6 @@ ACTIVE_FILE = "active.json"
 TICKETS_FILE = "tickets.json"
 CATEGORY_ORDERS_NAME = "Orders"
 CATEGORY_GENERAL_NAME = "General"
-TICKET_CHANNEL_ID = 1518420661335359759  # Lobby for ticket dropdown
 INACTIVE_CLOSE_HOURS = 24
 
 BASE_DIR = Path(__file__).parent.absolute()
@@ -980,7 +983,7 @@ async def nuke(ctx):
         await ctx.send("❌ I don't have permission to delete messages.", delete_after=5)
 
 # --------------------------
-# VC System: VC Management Panel setup command
+# VC System: VC Management Panel setup command (optional)
 # --------------------------
 @bot.command(name="setup_vcpanel")
 @commands.has_permissions(administrator=True)
@@ -1234,6 +1237,8 @@ async def on_ready():
     print(f"   Seller/Orderer Role: {SELLER_ROLE_ID}")
     print(f"   Support Role: {SUPPORT_ROLE}")
     print(f"   Store Channel: {STORE_CHANNEL_ID}")
+    print(f"   Ticket Dropdown Channel: {TICKET_CHANNEL_ID}")
+    print(f"   VC Management Panel Channel: {VCPANEL_CHANNEL_ID}")
 
     # Start background tasks
     bot.loop.create_task(expiry_watcher())
@@ -1258,19 +1263,21 @@ async def on_ready():
         except Exception as e:
             print(f"❌ Error posting VC Store: {e}")
 
-    # Post VC Management Panel in ADMIN_CHANNEL_ID
-    admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
-    if admin_channel:
+    # Post VC Management Panel in VCPANEL_CHANNEL_ID
+    panel_channel = bot.get_channel(VCPANEL_CHANNEL_ID)
+    if panel_channel:
         embed = discord.Embed(
             title="💳 VC Management Panel",
             description="Use the buttons below to manage your VC stock.",
             color=discord.Color.purple()
         )
         try:
-            await admin_channel.send(embed=embed, view=VCPanelView())
-            print(f"✅ VC Management Panel posted in {admin_channel.name}")
+            await panel_channel.send(embed=embed, view=VCPanelView())
+            print(f"✅ VC Management Panel posted in {panel_channel.name}")
         except Exception as e:
             print(f"❌ Error posting VC Management Panel: {e}")
+    else:
+        print(f"❌ VC Management channel {VCPANEL_CHANNEL_ID} not found.")
 
     # Post Ticket Dropdown in TICKET_CHANNEL_ID
     ticket_channel = bot.get_channel(TICKET_CHANNEL_ID)
@@ -1285,6 +1292,8 @@ async def on_ready():
             print(f"✅ Ticket dropdown posted in {ticket_channel.name}")
         except Exception as e:
             print(f"❌ Error posting ticket dropdown: {e}")
+    else:
+        print(f"❌ Ticket channel {TICKET_CHANNEL_ID} not found.")
 
     print("✅ Bot is fully ready.")
 
