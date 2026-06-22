@@ -32,7 +32,6 @@ load_dotenv()
 # --------------------------
 # Configuration
 # --------------------------
-TOKEN = "MTUxNjk0NDI3NjY0MTAyNjIyOA.G5F-2T.FyCLi_HITdboi4jq0BckxycW4Pwy9tzBMRbRyk"  # Paste your actual token
 GUILD_ID = int(os.getenv("GUILD_ID"))
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID"))   # Also used as review channel for orders
 SELLER_ROLE_ID = int(os.getenv("SELLER_ROLE_ID"))       # Used as Orderer role
