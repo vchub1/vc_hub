@@ -1,10 +1,12 @@
 """
-FULL MERGED BOT – VC Card Store + Ticket System (v2.3)
+FULL MERGED BOT – VC Card Store + Ticket System (v2.4)
 ------------------------------------------------
 - VC Store: PayPal checkout, auto‑dispense, live timer, expiry alerts.
-- Ticket System: Orders (form with address, VCC) & General Support (form with help type).
+- Ticket System: Orders (button + form) & General Support.
 - Auto‑creates missing categories.
-- Orderer Online/Offline toggle.
+- Orderer Online/Offline toggle with live status.
+- Tickets delete on close (not just lock).
+- Screenshot requested via DM, not in ticket channel.
 
 """
 
@@ -80,6 +82,17 @@ def set_orderer_online(user_id: int, online: bool):
 def is_orderer_online(user_id: int) -> bool:
     data = load_orderers()
     return data.get(str(user_id), False)
+
+def get_online_orderers(guild):
+    """Return list of online orderers with their names."""
+    online = []
+    for member in guild.members:
+        if member.bot:
+            continue
+        if SELLER_ROLE_ID in [role.id for role in member.roles]:
+            if is_orderer_online(member.id):
+                online.append(member.display_name)
+    return online
 
 # --------------------------
 # VC File helpers
@@ -432,13 +445,11 @@ async def ensure_category(guild, name):
     category = discord.utils.get(guild.categories, name=name)
     if category:
         return category
-    # Create it
     try:
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
         }
-        # Add roles if needed (optional)
         return await guild.create_category(name, overwrites=overwrites)
     except discord.Forbidden:
         print(f"❌ Bot lacks permissions to create category '{name}'.")
@@ -500,7 +511,7 @@ async def create_ticket_channel(guild, category_name, user, staff, ticket_type, 
     return channel
 
 # --------------------------
-# TicketView (inside ticket)
+# TicketView (inside ticket) – NOW DELETES CHANNEL
 # --------------------------
 class TicketView(ui.View):
     def __init__(self, channel_id, user_id):
@@ -513,11 +524,12 @@ class TicketView(ui.View):
         if interaction.user.id != self.user_id and not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message("❌ Not allowed.", ephemeral=True)
             return
-        await interaction.response.send_message("🔄 Closing ticket...")
-        await asyncio.sleep(5)
+        await interaction.response.send_message("🔄 Closing and deleting ticket...")
+        await asyncio.sleep(2)
         channel = interaction.channel
+
+        # Remove from database
         tickets = load_tickets()
-        ticket_type = None
         for ttype in ["orders", "general"]:
             for idx, ticket in enumerate(tickets[ttype]["open"]):
                 if ticket["channel_id"] == channel.id:
@@ -527,24 +539,25 @@ class TicketView(ui.View):
                     closed["reason"] = "Order Completed"
                     tickets[ttype]["open"].pop(idx)
                     tickets[ttype]["closed"].append(closed)
-                    ticket_type = ttype
+                    save_tickets(tickets)
                     break
-            if ticket_type:
-                break
-        save_tickets(tickets)
-        await channel.set_permissions(interaction.guild.default_role, read_messages=False)
-        await channel.send("🔒 Ticket closed (Order Completed).")
+            else:
+                continue
+            break
+
+        # Delete the channel
+        await channel.delete(reason="Order Completed")
 
     @ui.button(label="❌ Close Ticket", style=discord.ButtonStyle.danger, emoji="❌")
     async def close_ticket(self, interaction: discord.Interaction, button: ui.Button):
         if not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message("❌ Only staff can close.", ephemeral=True)
             return
-        await interaction.response.send_message("🔄 Closing ticket...")
+        await interaction.response.send_message("🔄 Closing and deleting ticket...")
         await asyncio.sleep(2)
         channel = interaction.channel
+
         tickets = load_tickets()
-        ticket_type = None
         for ttype in ["orders", "general"]:
             for idx, ticket in enumerate(tickets[ttype]["open"]):
                 if ticket["channel_id"] == channel.id:
@@ -554,13 +567,13 @@ class TicketView(ui.View):
                     closed["reason"] = "Closed by staff"
                     tickets[ttype]["open"].pop(idx)
                     tickets[ttype]["closed"].append(closed)
-                    ticket_type = ttype
+                    save_tickets(tickets)
                     break
-            if ticket_type:
-                break
-        save_tickets(tickets)
-        await channel.set_permissions(interaction.guild.default_role, read_messages=False)
-        await channel.send("🔒 Ticket closed by staff.")
+            else:
+                continue
+            break
+
+        await channel.delete(reason="Closed by staff")
 
 # --------------------------
 # Review View
@@ -628,19 +641,25 @@ class OrderModal(ui.Modal, title="📦 Order Details"):
             "vcc": self.vcc.value or "Not provided",
             "step": "awaiting_screenshot"
         }
-        embed = discord.Embed(
-            title="📸 Please Attach Screenshot",
-            description=(
-                f"**Store:** {self.store.value}\n"
-                f"**Total:** {self.total.value}\n"
-                f"**Address:** {self.address.value}\n"
-                f"**Postcode:** {self.postcode.value}\n"
-                f"**VCC:** {self.vcc.value or 'None'}\n\n"
-                "Reply to this DM with your screenshot (attach as image)."
-            ),
-            color=discord.Color.blue()
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        # Send DM asking for screenshot
+        try:
+            user = await bot.fetch_user(interaction.user.id)
+            embed = discord.Embed(
+                title="📸 Please Attach Screenshot",
+                description=(
+                    f"**Store:** {self.store.value}\n"
+                    f"**Total:** {self.total.value}\n"
+                    f"**Address:** {self.address.value}\n"
+                    f"**Postcode:** {self.postcode.value}\n"
+                    f"**VCC:** {self.vcc.value or 'None'}\n\n"
+                    "Reply to this DM with your screenshot (attach as image)."
+                ),
+                color=discord.Color.blue()
+            )
+            await user.send(embed=embed)
+            await interaction.followup.send("✅ Check your DMs to send the screenshot.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ I couldn't DM you. Please enable DMs from server members.", ephemeral=True)
 
 # --------------------------
 # Support Modal (form)
@@ -662,7 +681,61 @@ class SupportModal(ui.Modal, title="💬 General Support"):
             await interaction.followup.send("❌ Failed to create support ticket. Please contact an admin.", ephemeral=True)
 
 # --------------------------
-# Dropdown
+# Orders Button View (shows after selecting Orders)
+# --------------------------
+class OrdersButtonView(ui.View):
+    def __init__(self, guild):
+        super().__init__(timeout=None)
+        online_orderers = get_online_orderers(guild)
+        disabled = len(online_orderers) == 0
+
+        # Place Order button
+        self.place_order_button = ui.Button(
+            label="📦 Place Order",
+            style=discord.ButtonStyle.primary if not disabled else discord.ButtonStyle.secondary,
+            disabled=disabled,
+            emoji="📦"
+        )
+        self.place_order_button.callback = self.place_order_callback
+        self.add_item(self.place_order_button)
+
+        # Status message
+        if disabled:
+            self.add_item(ui.Button(
+                label="❌ No Orderers Online",
+                style=discord.ButtonStyle.danger,
+                disabled=True,
+                emoji="❌"
+            ))
+        else:
+            self.add_item(ui.Button(
+                label=f"🟢 {len(online_orderers)} Orderer(s) Online",
+                style=discord.ButtonStyle.success,
+                disabled=True,
+                emoji="🟢"
+            ))
+
+    async def place_order_callback(self, interaction: discord.Interaction):
+        # Check again if an orderer is online
+        guild = interaction.guild
+        staff = get_available_orderer(guild)
+        if not staff:
+            await interaction.response.send_message("❌ No orderers are online right now. Please try again later.", ephemeral=True)
+            return
+        await interaction.response.send_modal(OrderModal())
+
+def get_available_orderer(guild):
+    orderers = load_orderers()
+    for member in guild.members:
+        if member.bot:
+            continue
+        if SELLER_ROLE_ID in [role.id for role in member.roles]:
+            if is_orderer_online(member.id):
+                return member
+    return None
+
+# --------------------------
+# Ticket Dropdown – now shows button instead of direct form
 # --------------------------
 class TicketDropdown(ui.Select):
     def __init__(self):
@@ -674,26 +747,16 @@ class TicketDropdown(ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "orders":
-            # Check if an orderer is online
+            # Show the Orders button view (with status)
             guild = interaction.guild
-            staff = get_available_orderer(guild)
-            if not staff:
-                await interaction.response.send_message("❌ No orderers online.", ephemeral=True)
-                return
-            # Open Order Modal
-            await interaction.response.send_modal(OrderModal())
+            await interaction.response.send_message(
+                "📦 **Order System**\n\nClick the button below to place an order.\n"
+                "The button will be greyed out if no orderers are online.",
+                view=OrdersButtonView(guild),
+                ephemeral=True
+            )
         else:  # general
             await interaction.response.send_modal(SupportModal())
-
-def get_available_orderer(guild):
-    orderers = load_orderers()
-    for member in guild.members:
-        if member.bot:
-            continue
-        if SELLER_ROLE_ID in [role.id for role in member.roles]:
-            if is_orderer_online(member.id):
-                return member
-    return None
 
 class TicketViewDropdown(ui.View):
     def __init__(self):
@@ -802,7 +865,6 @@ async def close_ticket_cmd(ctx):
         await ctx.send("❌ Not a ticket channel.")
         return
     tickets = load_tickets()
-    ticket_type = None
     for ttype in ["orders", "general"]:
         for idx, t in enumerate(tickets[ttype]["open"]):
             if t["channel_id"] == channel.id:
@@ -812,15 +874,12 @@ async def close_ticket_cmd(ctx):
                 closed["reason"] = "Closed by admin"
                 tickets[ttype]["open"].pop(idx)
                 tickets[ttype]["closed"].append(closed)
-                ticket_type = ttype
-                break
-        if ticket_type:
-            break
-    save_tickets(tickets)
-    await ctx.send("🔒 Closing ticket...")
-    await asyncio.sleep(2)
-    await channel.set_permissions(ctx.guild.default_role, read_messages=False)
-    await channel.send("🔒 Ticket closed by admin.")
+                save_tickets(tickets)
+                await ctx.send("🔒 Closing and deleting ticket...")
+                await asyncio.sleep(2)
+                await channel.delete(reason="Closed by admin")
+                return
+    await ctx.send("❌ Ticket not found.")
 
 @bot.command(name="ticket_log")
 @commands.has_permissions(manage_channels=True)
@@ -940,7 +999,6 @@ async def timer_updater():
             remaining = exp - datetime.now(UTC)
             if remaining.total_seconds() <= 0:
                 continue
-            # update DM timer not implemented for simplicity
         await asyncio.sleep(30)
 
 @tasks.loop(hours=1)
@@ -961,14 +1019,12 @@ async def auto_close_inactive():
                 tickets[ttype]["open"].remove(ticket)
                 tickets[ttype]["closed"].append(closed)
                 closed_any = True
-                # Lock channel
                 guild = bot.get_guild(GUILD_ID)
                 if guild:
                     channel = guild.get_channel(ticket["channel_id"])
                     if channel:
                         try:
-                            await channel.set_permissions(guild.default_role, read_messages=False)
-                            await channel.send("🔒 Auto-closed due to inactivity.")
+                            await channel.delete(reason="Auto-closed due to inactivity")
                         except:
                             pass
     if closed_any:
@@ -1006,7 +1062,6 @@ def ipn():
         return f"OK - {payment_status}", 200
 
     if float(amount) != 1.00:
-        # Handle wrong amount
         pending = load_pending()
         matched = None
         for pid, pd in pending.items():
@@ -1022,7 +1077,6 @@ def ipn():
             save_pending(pending)
         return f"OK - Wrong amount {amount}", 200
 
-    # Normal flow
     pending = load_pending()
     matched = None
     for pid, pd in pending.items():
@@ -1035,14 +1089,12 @@ def ipn():
         msg_id = matched.get("followup_msg_id")
         del pending[pid]
         save_pending(pending)
-        # Update progress to 50%
         if token and msg_id:
             embed = progress_embed(50, "💰 Payment Received!", "Confirming payment...", color=discord.Color.blue())
             asyncio.run_coroutine_threadsafe(edit_followup_embed(token, msg_id, embed), bot.loop)
         asyncio.run_coroutine_threadsafe(dispense_vc(user_id, token, msg_id), bot.loop)
         return "OK", 200
     else:
-        # unmatched
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
             embed = discord.Embed(title="⚠️ Unmatched Payment", description=f"**Email:** {payer_email}\n**Amount:** £{amount}", color=discord.Color.orange())
@@ -1050,7 +1102,6 @@ def ipn():
         return "OK - Unmatched", 200
 
 async def handle_wrong_amount(user_id, payer_email, txn_id, amount, token, msg_id):
-    # Notify user via DM
     try:
         user = await bot.fetch_user(user_id)
         if user:
@@ -1061,7 +1112,6 @@ async def handle_wrong_amount(user_id, payer_email, txn_id, amount, token, msg_i
     if token and msg_id:
         embed = discord.Embed(title="❌ Payment Failed", description=f"You sent £{amount} – £1.00 required.", color=discord.Color.red())
         await edit_followup_embed(token, msg_id, embed)
-    # Admin alert
     admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
     if admin_channel:
         embed = discord.Embed(title="⚠️ Wrong Amount", description=f"Email: {payer_email}\nAmount: £{amount}\nUser: <@{user_id}>", color=discord.Color.red())
@@ -1089,7 +1139,6 @@ async def on_ready():
         print(f"🔄 Auto-close enabled: {INACTIVE_CLOSE_HOURS} hours.")
 
     # Post panels
-    # VC Store
     channel = bot.get_channel(STORE_CHANNEL_ID)
     if channel:
         embed = discord.Embed(title="🛍️ Virtual Card Store", description="Click below to purchase a card for £1.", color=discord.Color.gold())
@@ -1099,7 +1148,6 @@ async def on_ready():
         except Exception as e:
             print(f"❌ Error posting VC Store: {e}")
 
-    # VC Management + Orderer toggle
     panel_channel = bot.get_channel(VCPANEL_CHANNEL_ID)
     if panel_channel:
         embed = discord.Embed(title="💳 VC Management", description="Manage VC stock.", color=discord.Color.purple())
@@ -1116,7 +1164,6 @@ async def on_ready():
         except Exception as e:
             print(f"❌ Error posting Orderer toggle: {e}")
 
-    # Ticket dropdown
     ticket_channel = bot.get_channel(TICKET_CHANNEL_ID)
     if ticket_channel:
         embed = discord.Embed(title="🎫 Ticket System", description="Select option below to open a ticket.", color=discord.Color.gold())
