@@ -4,10 +4,11 @@ FULL MERGED BOT – VC Card Store + Ticket System
 Features:
 - VC Store: Purchase virtual cards via PayPal, auto-dispense, live timer, expiry alerts.
 - Ticket System: Orders (with staff check, DM collection, review channel) & General Support.
+- Orderer Online/Offline Toggle UI.
 - Admin commands for both systems.
 - Auto‑posts VC store and ticket dropdown on startup.
 
-Version: 2.0.0
+Version: 2.1.0
 """
 
 import discord
@@ -41,9 +42,12 @@ STORE_CHANNEL_ID = int(os.getenv("STORE_CHANNEL_ID", 0))
 PAYPAL_EMAIL = os.getenv("PAYPAL_EMAIL", "")
 PORT = int(os.getenv("PORT", 5000))
 
-# New channel IDs (hardcoded for simplicity)
-TICKET_CHANNEL_ID = 1518426882595356773       # Updated ticket dropdown lobby
-VCPANEL_CHANNEL_ID = 1518420853757313155      # Channel for VC management panel
+# New channel IDs (hardcoded)
+TICKET_CHANNEL_ID = 1518426882595356773       # Ticket dropdown lobby
+VCPANEL_CHANNEL_ID = 1518420853757313155      # VC management panel
+
+# Orderer availability file
+ORDERER_FILE = "orderers.json"
 
 # Check required variables
 if not TOKEN:
@@ -66,6 +70,28 @@ CATEGORY_GENERAL_NAME = "General"
 INACTIVE_CLOSE_HOURS = 24
 
 BASE_DIR = Path(__file__).parent.absolute()
+
+# --------------------------
+# Orderer Availability Helpers
+# --------------------------
+def load_orderers():
+    if not os.path.exists(ORDERER_FILE):
+        return {}
+    with open(ORDERER_FILE, "r") as f:
+        return json.load(f)
+
+def save_orderers(data):
+    with open(ORDERER_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+def set_orderer_online(user_id: int, online: bool):
+    data = load_orderers()
+    data[str(user_id)] = online
+    save_orderers(data)
+
+def is_orderer_online(user_id: int) -> bool:
+    data = load_orderers()
+    return data.get(str(user_id), False)
 
 # --------------------------
 # Path helpers for VC files
@@ -394,7 +420,6 @@ class AddCardModal(ui.Modal, title="➕ Add Virtual Card"):
             raw_expiry = self.expiry.value.strip()
             raw_cvv = self.cvv.value.strip()
 
-            # Basic validation
             if not raw_card.isdigit() or not (12 <= len(raw_card) <= 19):
                 await interaction.response.send_message("❌ Invalid card – must be 12-19 digits.", ephemeral=True)
                 return
@@ -430,6 +455,29 @@ class RemoveCardModal(ui.Modal, title="🗑️ Remove Card"):
                 await interaction.response.send_message("❌ Invalid card number.", ephemeral=True)
         except ValueError:
             await interaction.response.send_message("❌ Please enter a valid number.", ephemeral=True)
+
+# --------------------------
+# Orderer Online/Offline Toggle UI
+# --------------------------
+class OrdererToggleView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="🟢 Go Online", style=discord.ButtonStyle.success, emoji="🟢", custom_id="orderer_online")
+    async def go_online(self, interaction: discord.Interaction, button: ui.Button):
+        if SELLER_ROLE_ID not in [role.id for role in interaction.user.roles]:
+            await interaction.response.send_message("❌ You don't have the Orderer role.", ephemeral=True)
+            return
+        set_orderer_online(interaction.user.id, True)
+        await interaction.response.send_message("✅ You are now **Online** and will receive orders.", ephemeral=True)
+
+    @ui.button(label="🔴 Go Offline", style=discord.ButtonStyle.danger, emoji="🔴", custom_id="orderer_offline")
+    async def go_offline(self, interaction: discord.Interaction, button: ui.Button):
+        if SELLER_ROLE_ID not in [role.id for role in interaction.user.roles]:
+            await interaction.response.send_message("❌ You don't have the Orderer role.", ephemeral=True)
+            return
+        set_orderer_online(interaction.user.id, False)
+        await interaction.response.send_message("✅ You are now **Offline** and will not receive orders.", ephemeral=True)
 
 # --------------------------
 # VC System: Purchase flow (Store View)
@@ -532,20 +580,21 @@ def get_category(guild, name):
             return cat
     return None
 
-def get_online_orderer(guild):
+def get_available_orderer(guild):
+    """Returns a member with Orderer role who is marked online in the system."""
+    orderers = load_orderers()
     for member in guild.members:
         if member.bot:
             continue
-        for role in member.roles:
-            if role.id == SELLER_ROLE_ID:  # Using SELLER_ROLE_ID as Orderer
-                if member.status != discord.Status.offline:
-                    return member
+        if SELLER_ROLE_ID in [role.id for role in member.roles]:
+            if is_orderer_online(member.id):
+                return member
     return None
 
 async def create_ticket_channel(guild, category_name, user, staff, ticket_type, order_data=None):
     category = get_category(guild, category_name)
     if not category:
-        print(f"❌ Category '{category_name}' not found.")
+        print(f"❌ Category '{category_name}' not found. Please create it.")
         return None
 
     overwrites = {
@@ -561,7 +610,14 @@ async def create_ticket_channel(guild, category_name, user, staff, ticket_type, 
             overwrites[support_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
     ticket_name = f"{ticket_type}-{user.name[:5]}-{secrets.token_hex(3)}"
-    channel = await category.create_text_channel(name=ticket_name, overwrites=overwrites)
+    try:
+        channel = await category.create_text_channel(name=ticket_name, overwrites=overwrites)
+    except discord.Forbidden:
+        print(f"❌ Bot lacks permissions to create channel in category '{category_name}'.")
+        return None
+    except Exception as e:
+        print(f"❌ Failed to create channel: {e}")
+        return None
 
     embed = discord.Embed(
         title=f"📋 {ticket_type.title()} Ticket",
@@ -699,6 +755,8 @@ class ReviewView(ui.View):
             except:
                 pass
             await interaction.channel.send(f"✅ Ticket created: {channel.mention} for {user.mention}")
+        else:
+            await interaction.channel.send(f"❌ Failed to create ticket for {user.mention}. Check logs.")
 
     @ui.button(label="❌ Reject Order", style=discord.ButtonStyle.danger, emoji="❌")
     async def reject_order(self, interaction: discord.Interaction, button: ui.Button):
@@ -737,9 +795,12 @@ class TicketDropdown(ui.Select):
         selected = self.values[0]
         if selected == "orders":
             guild = interaction.guild
-            staff = get_online_orderer(guild)
+            staff = get_available_orderer(guild)
             if not staff:
-                await interaction.response.send_message("❌ No orderers are currently online. Please try again later.", ephemeral=True)
+                await interaction.response.send_message(
+                    "❌ No orderers are currently online. Please try again later.",
+                    ephemeral=True
+                )
                 return
 
             await interaction.response.send_message(
@@ -778,6 +839,8 @@ class TicketDropdown(ui.Select):
             )
             if channel:
                 await interaction.followup.send(f"✅ Support ticket created: {channel.mention}", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Failed to create support ticket. Please contact an admin.", ephemeral=True)
 
 class TicketViewDropdown(ui.View):
     def __init__(self):
@@ -819,7 +882,7 @@ async def on_message(message):
             await message.channel.send("❌ Error: Guild not found.")
             return
 
-        review_channel = guild.get_channel(ADMIN_CHANNEL_ID)  # Using ADMIN_CHANNEL_ID as review
+        review_channel = guild.get_channel(ADMIN_CHANNEL_ID)
         if not review_channel:
             await message.channel.send("❌ Error: Review channel not found.")
             return
@@ -951,7 +1014,7 @@ async def claim_ticket(ctx):
     await ctx.send("❌ Could not find this ticket in the database.")
 
 # --------------------------
-# VC System: Purge/Nuke commands (keep from original)
+# VC System: Purge/Nuke commands
 # --------------------------
 @bot.command(name="purge")
 @commands.has_permissions(manage_messages=True)
@@ -983,7 +1046,7 @@ async def nuke(ctx):
         await ctx.send("❌ I don't have permission to delete messages.", delete_after=5)
 
 # --------------------------
-# VC System: VC Management Panel setup command (optional)
+# VC System: Setup commands
 # --------------------------
 @bot.command(name="setup_vcpanel")
 @commands.has_permissions(administrator=True)
@@ -995,6 +1058,18 @@ async def setup_vcpanel(ctx):
     )
     await ctx.send(embed=embed, view=VCPanelView())
     await ctx.message.delete()
+
+@bot.command(name="setup_orderer_panel")
+@commands.has_permissions(administrator=True)
+async def setup_orderer_panel(ctx):
+    """Post the Orderer online/offline toggle panel."""
+    embed = discord.Embed(
+        title="🛎️ Orderer Availability",
+        description="Click the buttons below to go online or offline.\n"
+                    "You must have the Orderer role to use this.",
+        color=discord.Color.blue()
+    )
+    await ctx.send(embed=embed, view=OrdererToggleView())
 
 # --------------------------
 # Background Tasks: VC Expiry Watcher & Timer
@@ -1148,7 +1223,6 @@ def ipn():
                         bot.loop
                     )
                 else:
-                    # fallback: send admin alert
                     admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
                     if admin_channel:
                         try:
@@ -1247,7 +1321,7 @@ async def on_ready():
         auto_close_inactive.start()
         print(f"🔄 Auto-close enabled: {INACTIVE_CLOSE_HOURS} hours inactivity.")
 
-    # Post VC Store in STORE_CHANNEL_ID
+    # Post VC Store
     channel = bot.get_channel(STORE_CHANNEL_ID)
     if channel:
         embed = discord.Embed(
@@ -1263,7 +1337,7 @@ async def on_ready():
         except Exception as e:
             print(f"❌ Error posting VC Store: {e}")
 
-    # Post VC Management Panel in VCPANEL_CHANNEL_ID
+    # Post VC Management Panel
     panel_channel = bot.get_channel(VCPANEL_CHANNEL_ID)
     if panel_channel:
         embed = discord.Embed(
@@ -1279,7 +1353,21 @@ async def on_ready():
     else:
         print(f"❌ VC Management channel {VCPANEL_CHANNEL_ID} not found.")
 
-    # Post Ticket Dropdown in TICKET_CHANNEL_ID
+    # Post Orderer Toggle Panel (also in VC management channel or a dedicated one)
+    if panel_channel:
+        embed = discord.Embed(
+            title="🛎️ Orderer Availability",
+            description="Click the buttons below to go online or offline.\n"
+                        "You must have the Orderer role to use this.",
+            color=discord.Color.blue()
+        )
+        try:
+            await panel_channel.send(embed=embed, view=OrdererToggleView())
+            print(f"✅ Orderer Toggle Panel posted in {panel_channel.name}")
+        except Exception as e:
+            print(f"❌ Error posting Orderer Toggle Panel: {e}")
+
+    # Post Ticket Dropdown
     ticket_channel = bot.get_channel(TICKET_CHANNEL_ID)
     if ticket_channel:
         embed = discord.Embed(
@@ -1301,6 +1389,5 @@ async def on_ready():
 # Main runner
 # --------------------------
 if __name__ == "__main__":
-    # Start Flask in a separate thread for PayPal IPN
     threading.Thread(target=run_flask, daemon=True).start()
     bot.run(TOKEN)
