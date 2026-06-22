@@ -31,7 +31,7 @@ load_dotenv()
 # --------------------------
 # Configuration
 # --------------------------
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")  # Use BOT_TOKEN instead of TOKEN
 GUILD_ID = int(os.getenv("GUILD_ID"))
 REVIEW_CHANNEL = int(os.getenv("REVIEW_CHANNEL"))
 ORDERER_ROLE = int(os.getenv("ORDERER_ROLE"))
