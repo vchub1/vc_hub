@@ -59,7 +59,7 @@ ACTIVE_FILE = "active.json"
 TICKETS_FILE = "tickets.json"
 CATEGORY_ORDERS_NAME = "Orders"
 CATEGORY_GENERAL_NAME = "General"
-TICKET_CHANNEL_ID = 1511704776046280826  # Lobby for ticket dropdown
+TICKET_CHANNEL_ID = 1518420661335359759  # Lobby for ticket dropdown
 INACTIVE_CLOSE_HOURS = 24
 
 BASE_DIR = Path(__file__).parent.absolute()
