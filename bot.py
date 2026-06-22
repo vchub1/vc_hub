@@ -11,7 +11,7 @@ Version: 2.0.0
 """
 
 import discord
-from discord import ui, app_commands
+from discord import ui
 from discord.ext import commands, tasks
 import asyncio
 import json
@@ -25,20 +25,30 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 # --------------------------
-# Load environment variables
+# Load environment variables from Railway (or .env locally)
 # --------------------------
 load_dotenv()
 
 # --------------------------
-# Configuration
+# Configuration – ALL from environment
 # --------------------------
-GUILD_ID = int(os.getenv("GUILD_ID"))
-ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID"))   # Also used as review channel for orders
-SELLER_ROLE_ID = int(os.getenv("SELLER_ROLE_ID"))       # Used as Orderer role
-SUPPORT_ROLE = int(os.getenv("SUPPORT_ROLE"))           # Support role (you need to add this)
-STORE_CHANNEL_ID = int(os.getenv("STORE_CHANNEL_ID"))   # Where VC store appears
-PAYPAL_EMAIL = os.getenv("PAYPAL_EMAIL")
+TOKEN = os.getenv("BOT_TOKEN")          # MUST be set in Railway Variables
+GUILD_ID = int(os.getenv("GUILD_ID", 0))
+ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", 0))
+SELLER_ROLE_ID = int(os.getenv("SELLER_ROLE_ID", 0))
+SUPPORT_ROLE = int(os.getenv("SUPPORT_ROLE", 0))
+STORE_CHANNEL_ID = int(os.getenv("STORE_CHANNEL_ID", 0))
+PAYPAL_EMAIL = os.getenv("PAYPAL_EMAIL", "")
 PORT = int(os.getenv("PORT", 5000))
+
+# Check required variables
+if not TOKEN:
+    print("❌ BOT_TOKEN not set in environment variables. Please add it in Railway Variables.")
+    exit(1)
+if not GUILD_ID or not ADMIN_CHANNEL_ID or not SELLER_ROLE_ID or not SUPPORT_ROLE or not STORE_CHANNEL_ID or not PAYPAL_EMAIL:
+    print("❌ One or more required environment variables missing.")
+    print("   Required: GUILD_ID, ADMIN_CHANNEL_ID, SELLER_ROLE_ID, SUPPORT_ROLE, STORE_CHANNEL_ID, PAYPAL_EMAIL")
+    exit(1)
 
 # VC card files
 VC_FILE = "vcs.json"
@@ -1282,9 +1292,6 @@ async def on_ready():
 # Main runner
 # --------------------------
 if __name__ == "__main__":
-    if not TOKEN:
-        print("❌ BOT_TOKEN not set in environment variables.")
-    else:
-        # Start Flask in a separate thread for PayPal IPN
-        threading.Thread(target=run_flask, daemon=True).start()
-        bot.run(TOKEN)
+    # Start Flask in a separate thread for PayPal IPN
+    threading.Thread(target=run_flask, daemon=True).start()
+    bot.run(TOKEN)
