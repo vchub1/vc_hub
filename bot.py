@@ -36,13 +36,13 @@ TOKEN = os.getenv("BOT_TOKEN")          # MUST be set in Railway Variables
 GUILD_ID = int(os.getenv("GUILD_ID", 0))
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", 0))
 SELLER_ROLE_ID = int(os.getenv("SELLER_ROLE_ID", 0))
-SUPPORT_ROLE = 1518426882595356773  # Your new support role ID
+SUPPORT_ROLE = int(os.getenv("SUPPORT_ROLE", 0))
 STORE_CHANNEL_ID = int(os.getenv("STORE_CHANNEL_ID", 0))
 PAYPAL_EMAIL = os.getenv("PAYPAL_EMAIL", "")
 PORT = int(os.getenv("PORT", 5000))
 
-# New channel IDs (hardcoded for simplicity, or you can set them as env vars)
-TICKET_CHANNEL_ID = 1518420661335359759       # Lobby for ticket dropdown
+# New channel IDs (hardcoded for simplicity)
+TICKET_CHANNEL_ID = 1518426882595356773       # Updated ticket dropdown lobby
 VCPANEL_CHANNEL_ID = 1518420853757313155      # Channel for VC management panel
 
 # Check required variables
