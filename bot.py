@@ -3,12 +3,12 @@ FULL MERGED BOT – VC Card Store + Ticket System
 ------------------------------------------------
 Features:
 - VC Store: Purchase virtual cards via PayPal, auto-dispense, live timer, expiry alerts.
-- Ticket System: Orders (with staff check, DM collection, review channel) & General Support.
+- Ticket System: Orders (with staff check, form-based collection, review channel) & General Support.
 - Orderer Online/Offline Toggle UI.
 - Admin commands for both systems.
-- Auto‑posts VC store and ticket dropdown on startup.
+- Auto‑posts all panels on startup.
 
-Version: 2.1.0
+Version: 2.2.0
 """
 
 import discord
@@ -26,14 +26,14 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 # --------------------------
-# Load environment variables from Railway (or .env locally)
+# Load environment variables
 # --------------------------
 load_dotenv()
 
 # --------------------------
-# Configuration – ALL from environment
+# Configuration
 # --------------------------
-TOKEN = os.getenv("BOT_TOKEN")          # MUST be set in Railway Variables
+TOKEN = os.getenv("BOT_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", 0))
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", 0))
 SELLER_ROLE_ID = int(os.getenv("SELLER_ROLE_ID", 0))
@@ -42,28 +42,22 @@ STORE_CHANNEL_ID = int(os.getenv("STORE_CHANNEL_ID", 0))
 PAYPAL_EMAIL = os.getenv("PAYPAL_EMAIL", "")
 PORT = int(os.getenv("PORT", 5000))
 
-# New channel IDs (hardcoded)
-TICKET_CHANNEL_ID = 1518426882595356773       # Ticket dropdown lobby
-VCPANEL_CHANNEL_ID = 1518420853757313155      # VC management panel
+TICKET_CHANNEL_ID = 1518426882595356773
+VCPANEL_CHANNEL_ID = 1518420853757313155
 
-# Orderer availability file
 ORDERER_FILE = "orderers.json"
 
-# Check required variables
 if not TOKEN:
-    print("❌ BOT_TOKEN not set in environment variables. Please add it in Railway Variables.")
+    print("❌ BOT_TOKEN not set in environment variables.")
     exit(1)
 if not GUILD_ID or not ADMIN_CHANNEL_ID or not SELLER_ROLE_ID or not SUPPORT_ROLE or not STORE_CHANNEL_ID or not PAYPAL_EMAIL:
     print("❌ One or more required environment variables missing.")
-    print("   Required: GUILD_ID, ADMIN_CHANNEL_ID, SELLER_ROLE_ID, SUPPORT_ROLE, STORE_CHANNEL_ID, PAYPAL_EMAIL")
     exit(1)
 
-# VC card files
+# Files
 VC_FILE = "vcs.json"
 PENDING_FILE = "pending.json"
 ACTIVE_FILE = "active.json"
-
-# Ticket system files
 TICKETS_FILE = "tickets.json"
 CATEGORY_ORDERS_NAME = "Orders"
 CATEGORY_GENERAL_NAME = "General"
@@ -94,7 +88,7 @@ def is_orderer_online(user_id: int) -> bool:
     return data.get(str(user_id), False)
 
 # --------------------------
-# Path helpers for VC files
+# VC File helpers
 # --------------------------
 def get_vc_file():
     return os.path.join(BASE_DIR, VC_FILE)
@@ -105,9 +99,6 @@ def get_pending_file():
 def get_active_file():
     return os.path.join(BASE_DIR, ACTIVE_FILE)
 
-# --------------------------
-# VC File helpers
-# --------------------------
 def load_vc_pool():
     file_path = get_vc_file()
     if not os.path.exists(file_path):
@@ -177,7 +168,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --------------------------
-# VC System: Progress Embed helper
+# VC System: Progress Embed
 # --------------------------
 def progress_embed(percent: int, title: str, description: str, color=discord.Color.blue()):
     filled = int(percent / 10)
@@ -206,22 +197,21 @@ async def edit_followup_embed(token: str, msg_id: int, embed: discord.Embed):
 # VC System: Dispense
 # --------------------------
 async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
-    print(f"🔍 dispense_vc called: user_id={user_id}, token={'present' if token else 'None'}, msg_id={msg_id}")
+    print(f"🔍 dispense_vc called")
     try:
         cards = load_vc_pool()
-        print(f"📊 Cards loaded: {len(cards)} cards in stock")
         if not cards:
             admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
             if admin_channel:
                 try:
-                    await admin_channel.send("🚨 **No VCs left!** Use `!setup_vcpanel` to add more.")
+                    await admin_channel.send("🚨 **No VCs left!**")
                 except:
                     pass
             return False
 
         vc_data = cards.pop(0)
         save_vc_pool(cards)
-        print(f"💳 Dispensing card: {vc_data['card']}")
+        print(f"💳 Dispensing: {vc_data['card']}")
 
         expiry_time = datetime.now(UTC) + timedelta(hours=2)
         expiry_str = expiry_time.isoformat()
@@ -240,8 +230,7 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
 
             embed_confirm = discord.Embed(
                 title="✅ Thank You for Your Order!",
-                description="Your Virtual Card has been sent to your DMs above.\n\n"
-                            "**Please check your messages for the card details.**",
+                description="Your Virtual Card has been sent to your DMs above.\n\n**Please check your messages for the card details.**",
                 color=discord.Color.gold()
             )
             embed_confirm.set_footer(text="You have 2 hours to use this card.")
@@ -252,7 +241,7 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
                 dm_channel_id = dm_channel.id
                 dm_message_id = msg_card.id
                 await dm_channel.send(embed=embed_confirm)
-                print(f"✅ Confirmation DM sent to user {user_id}")
+                print(f"✅ DM sent to user {user_id}")
             except discord.Forbidden:
                 print(f"❌ Cannot DM user {user_id}")
             except Exception as e:
@@ -269,13 +258,7 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
         save_active(active)
 
         if token and msg_id:
-            embed = progress_embed(
-                100,
-                "✅ Card Delivered!",
-                "Your Virtual Card has been sent to your DMs.\n"
-                "Please check your messages and use the card within 2 hours.",
-                color=discord.Color.green()
-            )
+            embed = progress_embed(100, "✅ Card Delivered!", "Your Virtual Card has been sent to your DMs.", color=discord.Color.green())
             await edit_followup_embed(token, msg_id, embed)
 
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
@@ -286,17 +269,15 @@ async def dispense_vc(user_id: int, token: str = None, msg_id: int = None):
                 role_mention = seller_role.mention if seller_role else "@here"
                 embed_warn = discord.Embed(
                     title="⚠️ VC DISPENSED – USE WITHIN 2 HOURS",
-                    description=f"Card: `{vc_data['card']}`\nExpiry: `{vc_data['expiry']}`\nUser: <@{user_id}>\nExpires at {expiry_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                    description=f"Card: `{vc_data['card']}`\nUser: <@{user_id}>\nExpires at {expiry_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
                     color=discord.Color.orange()
                 )
                 await admin_channel.send(content=f"{role_mention}", embed=embed_warn)
                 print("✅ Admin alert sent")
             except discord.Forbidden:
-                print(f"❌ No permission to send admin alert in channel {ADMIN_CHANNEL_ID} – check bot permissions.")
+                print(f"❌ No permission to send admin alert")
             except Exception as e:
                 print(f"❌ Failed to send admin alert: {e}")
-        else:
-            print(f"❌ Admin channel {ADMIN_CHANNEL_ID} not found.")
 
         return True
     except Exception as e:
@@ -312,8 +293,7 @@ async def handle_wrong_amount(user_id: int, payer_email: str, txn_id: str, amoun
     if token and msg_id:
         embed = discord.Embed(
             title="❌ Payment Failed – Wrong Amount",
-            description=f"You sent **£{amount}** but the required amount is **£1.00**.\n\n"
-                        "Your purchase has been cancelled. Please try again with the correct amount.",
+            description=f"You sent **£{amount}** but the required amount is **£1.00**.\n\nYour purchase has been cancelled.",
             color=discord.Color.red()
         )
         await edit_followup_embed(token, msg_id, embed)
@@ -323,10 +303,7 @@ async def handle_wrong_amount(user_id: int, payer_email: str, txn_id: str, amoun
         if user:
             embed = discord.Embed(
                 title="⚠️ Wrong Payment Amount",
-                description=(
-                    f"You sent **£{amount}** but the required amount is **£1.00**.\n\n"
-                    "Your purchase has been cancelled. Please send the correct amount (£1.00) to proceed."
-                ),
+                description=f"You sent **£{amount}** but the required amount is **£1.00**.\n\nYour purchase has been cancelled.",
                 color=discord.Color.red()
             )
             await user.send(embed=embed)
@@ -339,14 +316,7 @@ async def handle_wrong_amount(user_id: int, payer_email: str, txn_id: str, amoun
         try:
             embed = discord.Embed(
                 title="⚠️ Wrong Payment Amount Received",
-                description=(
-                    f"**Payer Email:** {payer_email}\n"
-                    f"**Transaction ID:** {txn_id}\n"
-                    f"**Amount Received:** £{amount}\n"
-                    f"**Expected:** £1.00\n"
-                    f"User: <@{user_id}>\n"
-                    "Payment ignored and user notified."
-                ),
+                description=f"**Payer Email:** {payer_email}\n**Amount Received:** £{amount}\n**Expected:** £1.00\nUser: <@{user_id}>",
                 color=discord.Color.red()
             )
             await admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed)
@@ -354,7 +324,7 @@ async def handle_wrong_amount(user_id: int, payer_email: str, txn_id: str, amoun
             pass
 
 # --------------------------
-# VC System: VC Management Panel (Add/View/Remove Cards)
+# VC Management Panel
 # --------------------------
 class VCPanelView(ui.View):
     def __init__(self):
@@ -397,11 +367,7 @@ class VCPanelView(ui.View):
         await interaction.response.send_modal(modal)
 
 class ClearConfirmModal(ui.Modal, title="🧹 Clear All Cards"):
-    confirm = ui.TextInput(
-        label="Type 'CONFIRM' to delete all cards",
-        placeholder="CONFIRM",
-        required=True
-    )
+    confirm = ui.TextInput(label="Type 'CONFIRM' to delete all cards", placeholder="CONFIRM", required=True)
     async def on_submit(self, interaction: discord.Interaction):
         if self.confirm.value.strip().upper() == "CONFIRM":
             save_vc_pool([])
@@ -457,13 +423,13 @@ class RemoveCardModal(ui.Modal, title="🗑️ Remove Card"):
             await interaction.response.send_message("❌ Please enter a valid number.", ephemeral=True)
 
 # --------------------------
-# Orderer Online/Offline Toggle UI
+# Orderer Toggle UI
 # --------------------------
 class OrdererToggleView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @ui.button(label="🟢 Go Online", style=discord.ButtonStyle.success, emoji="🟢", custom_id="orderer_online")
+    @ui.button(label="🟢 Go Online", style=discord.ButtonStyle.success, emoji="🟢")
     async def go_online(self, interaction: discord.Interaction, button: ui.Button):
         if SELLER_ROLE_ID not in [role.id for role in interaction.user.roles]:
             await interaction.response.send_message("❌ You don't have the Orderer role.", ephemeral=True)
@@ -471,7 +437,7 @@ class OrdererToggleView(ui.View):
         set_orderer_online(interaction.user.id, True)
         await interaction.response.send_message("✅ You are now **Online** and will receive orders.", ephemeral=True)
 
-    @ui.button(label="🔴 Go Offline", style=discord.ButtonStyle.danger, emoji="🔴", custom_id="orderer_offline")
+    @ui.button(label="🔴 Go Offline", style=discord.ButtonStyle.danger, emoji="🔴")
     async def go_offline(self, interaction: discord.Interaction, button: ui.Button):
         if SELLER_ROLE_ID not in [role.id for role in interaction.user.roles]:
             await interaction.response.send_message("❌ You don't have the Orderer role.", ephemeral=True)
@@ -480,7 +446,7 @@ class OrdererToggleView(ui.View):
         await interaction.response.send_message("✅ You are now **Offline** and will not receive orders.", ephemeral=True)
 
 # --------------------------
-# VC System: Purchase flow (Store View)
+# VC Store View
 # --------------------------
 class StoreView(ui.View):
     def __init__(self):
@@ -490,18 +456,15 @@ class StoreView(ui.View):
     async def buy(self, interaction: discord.Interaction, button: ui.Button):
         cards = load_vc_pool()
         if not cards:
-            await interaction.response.send_message(
-                "❌ **Error: Unable to purchase** – there is no stock available at the moment. Please wait for restock.",
-                ephemeral=True
-            )
+            await interaction.response.send_message("❌ **Error: No stock available.**", ephemeral=True)
             return
         embed = discord.Embed(
             title="📋 Terms & Conditions",
             description=(
                 "By purchasing a Virtual Card, you agree to the following:\n\n"
                 "**1.** You must use the Virtual Card within **2 hours** of receiving it.\n"
-                "**2.** After 2 hours, the card will be terminated and you will no longer be able to use it.\n"
-                "**3.** **No chargebacks** – if a chargeback is issued, necessary action will be taken.\n"
+                "**2.** After 2 hours, the card will be terminated.\n"
+                "**3.** **No chargebacks** – necessary action will be taken.\n"
                 "**4.** This card is for **one-time use only**.\n\n"
                 "Do you agree to these terms?"
             ),
@@ -516,16 +479,12 @@ class StoreView(ui.View):
         embed = discord.Embed(
             title="📖 How to Purchase a Virtual Card",
             description=(
-                "**Step-by-Step Guide:**\n\n"
-                "**1️⃣ Click the 'Purchase Virtual Card' button**\n"
-                "**2️⃣ Read and agree to the Terms & Conditions**\n"
-                "**3️⃣ Enter your PayPal email** – this must match the email you'll send from.\n"
+                "**1️⃣ Click 'Purchase Virtual Card'**\n"
+                "**2️⃣ Agree to Terms & Conditions**\n"
+                "**3️⃣ Enter your PayPal email** – must match the email you send from.\n"
                 "**4️⃣ Send exactly £1.00** to the PayPal address shown.\n"
-                "   – Copy the email and paste it into PayPal.\n"
-                "   – **DO NOT use PayPal.me – it doesn't work reliably.**\n"
-                "**5️⃣ Wait for automatic confirmation** – your card will be sent to DMs.\n"
-                "**6️⃣ Use the card within 2 hours** – it will be terminated after that.\n\n"
-                "⚠️ Double-check your email and amount before sending!"
+                "**5️⃣ Wait for confirmation** – your card will be sent to DMs.\n"
+                "**6️⃣ Use the card within 2 hours** – it will be terminated after that."
             ),
             color=discord.Color.blue()
         )
@@ -560,8 +519,7 @@ class BuyModal(ui.Modal, title="💳 Purchase VC"):
         embed = progress_embed(
             20,
             "⏳ Step 1: Email Submitted",
-            f"Your email has been recorded.\n\n"
-            f"**Send £1.00 to:** `{PAYPAL_EMAIL}`\n"
+            f"Your email has been recorded.\n\n**Send £1.00 to:** `{PAYPAL_EMAIL}`\n"
             "Copy this email and paste it into PayPal.\n"
             "**DO NOT use PayPal.me – it doesn't work reliably.**\n\n"
             "Once payment is detected, this progress bar will update automatically."
@@ -581,7 +539,6 @@ def get_category(guild, name):
     return None
 
 def get_available_orderer(guild):
-    """Returns a member with Orderer role who is marked online in the system."""
     orderers = load_orderers()
     for member in guild.members:
         if member.bot:
@@ -591,7 +548,7 @@ def get_available_orderer(guild):
                 return member
     return None
 
-async def create_ticket_channel(guild, category_name, user, staff, ticket_type, order_data=None):
+async def create_ticket_channel(guild, category_name, user, staff, ticket_type, order_data=None, attachment_url=None):
     category = get_category(guild, category_name)
     if not category:
         print(f"❌ Category '{category_name}' not found. Please create it.")
@@ -626,6 +583,8 @@ async def create_ticket_channel(guild, category_name, user, staff, ticket_type, 
     )
     if order_data:
         embed.add_field(name="📦 Order Details", value=order_data, inline=False)
+    if attachment_url:
+        embed.set_image(url=attachment_url)
     embed.set_footer(text="Use the buttons below to manage this ticket.")
 
     view = TicketView(channel.id, user.id)
@@ -646,7 +605,7 @@ async def create_ticket_channel(guild, category_name, user, staff, ticket_type, 
     return channel
 
 # --------------------------
-# Ticket System: TicketView (buttons inside tickets)
+# Ticket System: TicketView
 # --------------------------
 class TicketView(ui.View):
     def __init__(self, channel_id, user_id):
@@ -654,10 +613,10 @@ class TicketView(ui.View):
         self.channel_id = channel_id
         self.user_id = user_id
 
-    @ui.button(label="✅ Order Completed", style=discord.ButtonStyle.success, emoji="✅", custom_id="complete_order")
+    @ui.button(label="✅ Order Completed", style=discord.ButtonStyle.success, emoji="✅")
     async def complete_order(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.user_id and not interaction.user.guild_permissions.manage_channels:
-            await interaction.response.send_message("❌ You don't have permission to close this ticket.", ephemeral=True)
+            await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
             return
 
         await interaction.response.send_message("🔄 Closing ticket in 5 seconds...")
@@ -681,9 +640,9 @@ class TicketView(ui.View):
                 break
         save_tickets(tickets)
         await channel.set_permissions(interaction.guild.default_role, read_messages=False)
-        await channel.send("🔒 This ticket has been closed and archived (Order Completed).")
+        await channel.send("🔒 Ticket closed and archived (Order Completed).")
 
-    @ui.button(label="❌ Close Ticket", style=discord.ButtonStyle.danger, emoji="❌", custom_id="close_ticket")
+    @ui.button(label="❌ Close Ticket", style=discord.ButtonStyle.danger, emoji="❌")
     async def close_ticket(self, interaction: discord.Interaction, button: ui.Button):
         if not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message("❌ Only staff can close tickets.", ephemeral=True)
@@ -713,14 +672,15 @@ class TicketView(ui.View):
         await channel.send("🔒 Ticket closed by staff.")
 
 # --------------------------
-# Ticket System: ReviewView (Approve/Reject)
+# Ticket System: ReviewView
 # --------------------------
 class ReviewView(ui.View):
-    def __init__(self, user_id, order_data, staff_id):
+    def __init__(self, user_id, order_data, staff_id, attachment_url=None):
         super().__init__(timeout=600)
         self.user_id = user_id
         self.order_data = order_data
         self.staff_id = staff_id
+        self.attachment_url = attachment_url
 
     @ui.button(label="✅ Approve Order", style=discord.ButtonStyle.success, emoji="✅")
     async def approve_order(self, interaction: discord.Interaction, button: ui.Button):
@@ -742,7 +702,8 @@ class ReviewView(ui.View):
             user,
             staff,
             "orders",
-            self.order_data
+            self.order_data,
+            self.attachment_url
         )
         if channel:
             try:
@@ -756,7 +717,7 @@ class ReviewView(ui.View):
                 pass
             await interaction.channel.send(f"✅ Ticket created: {channel.mention} for {user.mention}")
         else:
-            await interaction.channel.send(f"❌ Failed to create ticket for {user.mention}. Check logs.")
+            await interaction.channel.send(f"❌ Failed to create ticket for {user.mention}.")
 
     @ui.button(label="❌ Reject Order", style=discord.ButtonStyle.danger, emoji="❌")
     async def reject_order(self, interaction: discord.Interaction, button: ui.Button):
@@ -781,6 +742,131 @@ class ReviewView(ui.View):
             pass
 
 # --------------------------
+# Order Modal (the form for orders)
+# --------------------------
+class OrderModal(ui.Modal, title="📦 Order Details"):
+    store = ui.TextInput(label="Store Name", placeholder="e.g., Amazon, eBay, etc.", required=True, max_length=100)
+    total = ui.TextInput(label="Order Total", placeholder="e.g., £50.00 or 50.00", required=True, max_length=20)
+    details = ui.TextInput(label="Payment Details", placeholder="Enter payment details (VCC info, etc.)", required=True, style=discord.TextStyle.paragraph, max_length=500)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Defer so we can send a followup for screenshot
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+        # Store the modal data in a temporary cache
+        if not hasattr(bot, "order_form_cache"):
+            bot.order_form_cache = {}
+        bot.order_form_cache[str(interaction.user.id)] = {
+            "store": self.store.value,
+            "total": self.total.value,
+            "details": self.details.value,
+            "step": "awaiting_screenshot"
+        }
+
+        # Ask user to attach screenshot
+        embed = discord.Embed(
+            title="📸 Please Attach Screenshot",
+            description="Please reply to this message with your screenshot.\n\n"
+                        "**Store:** " + self.store.value + "\n"
+                        "**Total:** " + self.total.value + "\n\n"
+                        "Reply with your screenshot (attach as image) and I'll send it to review.",
+            color=discord.Color.blue()
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+# --------------------------
+# Order Screenshot Handler (handles the attachment reply)
+# --------------------------
+async def handle_order_screenshot(user_id: int, attachment_url: str):
+    if not hasattr(bot, "order_form_cache"):
+        return None
+
+    cache = bot.order_form_cache.get(str(user_id))
+    if not cache or cache.get("step") != "awaiting_screenshot":
+        return None
+
+    # Build order data
+    order_data = (
+        f"**Store:** {cache['store']}\n"
+        f"**Total:** {cache['total']}\n"
+        f"**Details:** {cache['details']}\n"
+        f"**Screenshot:** [View]({attachment_url})"
+    )
+
+    # Find available orderer
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return None
+
+    staff = get_available_orderer(guild)
+    staff_id = staff.id if staff else None
+
+    # Send to review channel
+    review_channel = guild.get_channel(ADMIN_CHANNEL_ID)
+    if not review_channel:
+        return None
+
+    embed = discord.Embed(
+        title="📦 New Order Review",
+        description=order_data,
+        color=discord.Color.blue()
+    )
+    embed.set_image(url=attachment_url)
+    embed.set_footer(text="Orderer will be assigned automatically.")
+
+    view = ReviewView(user_id, order_data, staff_id, attachment_url)
+    staff_mention = f"<@&{SELLER_ROLE_ID}>" if staff_id else "No orderer online"
+    await review_channel.send(content=f"📢 {staff_mention}", embed=embed, view=view)
+
+    # Notify user
+    user = await bot.fetch_user(user_id)
+    if user:
+        try:
+            embed = discord.Embed(
+                title="✅ Order Sent for Review",
+                description=f"Your order has been sent to {staff.mention if staff else 'review'}.\nYou'll be notified once approved or rejected.",
+                color=discord.Color.green()
+            )
+            await user.send(embed=embed)
+        except:
+            pass
+
+    # Clear cache
+    del bot.order_form_cache[str(user_id)]
+
+    return True
+
+# --------------------------
+# DM Handler (for order screenshot)
+# --------------------------
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    # Handle DM messages for order screenshots
+    if isinstance(message.channel, discord.DMChannel):
+        if not hasattr(bot, "order_form_cache"):
+            bot.order_form_cache = {}
+
+        user_id_str = str(message.author.id)
+        if user_id_str in bot.order_form_cache and bot.order_form_cache[user_id_str].get("step") == "awaiting_screenshot":
+            if message.attachments:
+                attachment_url = message.attachments[0].url
+                await handle_order_screenshot(message.author.id, attachment_url)
+                await message.channel.send("✅ Screenshot received! Your order has been sent for review.")
+            else:
+                await message.channel.send("❌ Please attach an image/screenshot to this message.")
+            return
+
+        # Pass through to command processing
+        await bot.process_commands(message)
+        return
+
+    # Guild messages – process commands
+    await bot.process_commands(message)
+
+# --------------------------
 # Ticket System: Dropdown & Views
 # --------------------------
 class TicketDropdown(ui.Select):
@@ -789,7 +875,7 @@ class TicketDropdown(ui.Select):
             discord.SelectOption(label="📦 Order", value="orders", description="Open an order ticket"),
             discord.SelectOption(label="💬 General Support", value="general", description="Open a general support ticket")
         ]
-        super().__init__(placeholder="Select a ticket type...", options=options, custom_id="ticket_dropdown")
+        super().__init__(placeholder="Select a ticket type...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         selected = self.values[0]
@@ -803,28 +889,9 @@ class TicketDropdown(ui.Select):
                 )
                 return
 
-            await interaction.response.send_message(
-                f"✅ An orderer ({staff.mention}) is available! I've sent you a DM to collect order details.",
-                ephemeral=True
-            )
-
-            try:
-                await interaction.user.send(
-                    f"📦 **Order Process Started**\n\n"
-                    f"Your orderer is: {staff.mention}\n\n"
-                    f"Please reply to this DM with the following details:\n"
-                    f"1. **Payment details** (VCC info, store, order total)\n"
-                    f"2. **A screenshot** (attach as image)\n\n"
-                    f"Once received, your order will be reviewed and a ticket will be created."
-                )
-                if not hasattr(bot, "order_cache"):
-                    bot.order_cache = {}
-                bot.order_cache[str(interaction.user.id)] = {
-                    "staff_id": staff.id,
-                    "step": "awaiting_details"
-                }
-            except discord.Forbidden:
-                await interaction.followup.send("❌ I couldn't DM you. Please enable DMs from server members.", ephemeral=True)
+            # Open the Order Modal (form)
+            modal = OrderModal()
+            await interaction.response.send_modal(modal)
 
         else:  # general
             guild = interaction.guild
@@ -848,69 +915,14 @@ class TicketViewDropdown(ui.View):
         self.add_item(TicketDropdown())
 
 # --------------------------
-# Ticket System: DM Handler
-# --------------------------
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-    if not isinstance(message.channel, discord.DMChannel):
-        await bot.process_commands(message)
-        return
-
-    if not hasattr(bot, "order_cache"):
-        bot.order_cache = {}
-
-    user_id_str = str(message.author.id)
-    if user_id_str not in bot.order_cache:
-        return
-
-    cache = bot.order_cache[user_id_str]
-    if cache["step"] == "awaiting_details":
-        if message.attachments:
-            attachment_url = message.attachments[0].url
-            order_data = f"**Order Details from {message.author.display_name}:**\n\n**Details:** {cache.get('details', 'Not provided')}\n**Screenshot:** {attachment_url}"
-        else:
-            cache["details"] = message.content
-            bot.order_cache[user_id_str] = cache
-            await message.channel.send("📝 Details recorded. Please send a **screenshot** to confirm (attach as image).")
-            return
-
-        staff_id = cache["staff_id"]
-        guild = bot.get_guild(GUILD_ID)
-        if not guild:
-            await message.channel.send("❌ Error: Guild not found.")
-            return
-
-        review_channel = guild.get_channel(ADMIN_CHANNEL_ID)
-        if not review_channel:
-            await message.channel.send("❌ Error: Review channel not found.")
-            return
-
-        order_data_full = f"**User:** {message.author.mention}\n**Details:** {cache.get('details', 'Not provided')}\n**Screenshot:** [View]({attachment_url if message.attachments else 'None'})"
-
-        embed = discord.Embed(
-            title="📦 New Order Review",
-            description=order_data_full,
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text="Orderer will be assigned automatically.")
-
-        view = ReviewView(message.author.id, order_data_full, staff_id)
-        await review_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed, view=view)
-
-        await message.channel.send("✅ Your order has been sent for review! You'll be notified once approved or rejected.")
-        del bot.order_cache[user_id_str]
-
-# --------------------------
-# Ticket System: Admin Commands
+# Admin Commands
 # --------------------------
 @bot.command(name="add_orderer")
 @commands.has_permissions(administrator=True)
 async def add_orderer(ctx, member: discord.Member):
     role = ctx.guild.get_role(SELLER_ROLE_ID)
     if not role:
-        await ctx.send("❌ Orderer role not found. Please create it first.")
+        await ctx.send("❌ Orderer role not found.")
         return
     await member.add_roles(role)
     await ctx.send(f"✅ Added {member.mention} to Orderer role.")
@@ -1014,7 +1026,7 @@ async def claim_ticket(ctx):
     await ctx.send("❌ Could not find this ticket in the database.")
 
 # --------------------------
-# VC System: Purge/Nuke commands
+# Purge/Nuke Commands
 # --------------------------
 @bot.command(name="purge")
 @commands.has_permissions(manage_messages=True)
@@ -1046,7 +1058,7 @@ async def nuke(ctx):
         await ctx.send("❌ I don't have permission to delete messages.", delete_after=5)
 
 # --------------------------
-# VC System: Setup commands
+# Setup Commands
 # --------------------------
 @bot.command(name="setup_vcpanel")
 @commands.has_permissions(administrator=True)
@@ -1062,17 +1074,15 @@ async def setup_vcpanel(ctx):
 @bot.command(name="setup_orderer_panel")
 @commands.has_permissions(administrator=True)
 async def setup_orderer_panel(ctx):
-    """Post the Orderer online/offline toggle panel."""
     embed = discord.Embed(
         title="🛎️ Orderer Availability",
-        description="Click the buttons below to go online or offline.\n"
-                    "You must have the Orderer role to use this.",
+        description="Click the buttons below to go online or offline.\nYou must have the Orderer role to use this.",
         color=discord.Color.blue()
     )
     await ctx.send(embed=embed, view=OrdererToggleView())
 
 # --------------------------
-# Background Tasks: VC Expiry Watcher & Timer
+# Background Tasks
 # --------------------------
 async def expiry_watcher():
     await bot.wait_until_ready()
@@ -1126,9 +1136,6 @@ async def timer_updater():
                     pass
         await asyncio.sleep(30)
 
-# --------------------------
-# Background Task: Auto-close inactive tickets
-# --------------------------
 @tasks.loop(hours=1)
 async def auto_close_inactive():
     if INACTIVE_CLOSE_HOURS <= 0:
@@ -1163,7 +1170,7 @@ async def auto_close_inactive():
         save_tickets(tickets)
 
 # --------------------------
-# Flask IPN Server (for PayPal)
+# Flask IPN Server
 # --------------------------
 app_flask = Flask(__name__)
 
@@ -1175,16 +1182,12 @@ def test():
 def ipn():
     data = request.form.to_dict()
     print("📥 IPN received!")
-    print("📋 Full data:", data)
 
     payment_status = data.get("payment_status")
     payer_email = data.get("payer_email", "").strip().lower()
     txn_id = data.get("txn_id")
     amount = data.get("mc_gross") or data.get("amount") or "0.00"
-    print(f"🔑 Payment Status: {payment_status}")
-    print(f"🔑 Payer Email: {payer_email}")
-    print(f"🔑 Transaction ID: {txn_id}")
-    print(f"🔑 Amount: {amount}")
+    print(f"🔑 Status: {payment_status}, Email: {payer_email}, TXID: {txn_id}, Amount: {amount}")
 
     verify_url = "https://www.paypal.com/cgi-bin/webscr"
     verify_data = data.copy()
@@ -1196,106 +1199,99 @@ def ipn():
         print(f"❌ Verification failed: {e}")
         return "Verification failed", 500
 
-    if resp.text == "VERIFIED":
-        print("✅ IPN verified")
-        if payment_status == "Completed":
-            try:
-                amt = float(amount)
-            except:
-                amt = 0.0
-            if amt != 1.00:
-                print(f"⚠️ Amount is {amount}, not £1.00 – handling wrong amount.")
-                pending = load_pending()
-                matched_user_id = None
-                token = None
-                msg_id = None
-                for purchase_id, data in pending.items():
-                    if data.get("payer_email", "").strip().lower() == payer_email:
-                        matched_user_id = data.get("user_id")
-                        token = data.get("followup_token")
-                        msg_id = data.get("followup_msg_id")
-                        del pending[purchase_id]
-                        save_pending(pending)
-                        break
-                if matched_user_id:
-                    asyncio.run_coroutine_threadsafe(
-                        handle_wrong_amount(matched_user_id, payer_email, txn_id, amount, token, msg_id),
-                        bot.loop
-                    )
-                else:
-                    admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
-                    if admin_channel:
-                        try:
-                            embed = discord.Embed(
-                                title="⚠️ Wrong Payment Amount (No Pending Match)",
-                                description=f"**Email:** {payer_email}\n**Amount:** £{amount}\n**TXID:** {txn_id}",
-                                color=discord.Color.red()
-                            )
-                            asyncio.run_coroutine_threadsafe(
-                                admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed),
-                                bot.loop
-                            )
-                        except:
-                            pass
-                return f"OK - Wrong amount {amount}", 200
-
-            print("✅ Payment Completed & Amount verified")
-            pending = load_pending()
-            matched_purchase_id = None
-            matched_user_id = None
-            token = None
-            msg_id = None
-
-            for purchase_id, data in pending.items():
-                if data.get("payer_email", "").strip().lower() == payer_email:
-                    matched_purchase_id = purchase_id
-                    matched_user_id = data.get("user_id")
-                    token = data.get("followup_token")
-                    msg_id = data.get("followup_msg_id")
-                    break
-
-            if matched_purchase_id and matched_user_id:
-                print(f"✅ Found matching email: {payer_email} -> User {matched_user_id}")
-                del pending[matched_purchase_id]
-                save_pending(pending)
-
-                if token and msg_id:
-                    embed = progress_embed(
-                        50,
-                        "💰 Payment Received!",
-                        "Your payment has been confirmed.\nWe're now preparing your Virtual Card – please wait.",
-                        color=discord.Color.blue()
-                    )
-                    asyncio.run_coroutine_threadsafe(
-                        edit_followup_embed(token, msg_id, embed),
-                        bot.loop
-                    )
-
-                asyncio.run_coroutine_threadsafe(dispense_vc(matched_user_id, token, msg_id), bot.loop)
-                return "OK", 200
-            else:
-                print(f"❌ No pending purchase found for email: {payer_email}")
-                admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
-                if admin_channel:
-                    try:
-                        embed = discord.Embed(
-                            title="⚠️ Unmatched Payment",
-                            description=f"**Email:** {payer_email}\n**Amount:** £{amount}\n**TXID:** {txn_id}\nNo matching pending purchase.",
-                            color=discord.Color.orange()
-                        )
-                        asyncio.run_coroutine_threadsafe(
-                            admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed),
-                            bot.loop
-                        )
-                    except:
-                        pass
-                return "OK - Unmatched", 200
-        else:
-            print(f"📌 Status: {payment_status} – not dispensing")
-            return f"OK - {payment_status}", 200
-    else:
+    if resp.text != "VERIFIED":
         print("❌ IPN verification failed")
         return "Verification failed", 400
+
+    print("✅ IPN verified")
+    if payment_status != "Completed":
+        print(f"📌 Status: {payment_status} – not dispensing")
+        return f"OK - {payment_status}", 200
+
+    try:
+        amt = float(amount)
+    except:
+        amt = 0.0
+
+    if amt != 1.00:
+        print(f"⚠️ Amount is {amount}, not £1.00")
+        pending = load_pending()
+        matched_user_id = None
+        token = None
+        msg_id = None
+        for purchase_id, data in pending.items():
+            if data.get("payer_email", "").strip().lower() == payer_email:
+                matched_user_id = data.get("user_id")
+                token = data.get("followup_token")
+                msg_id = data.get("followup_msg_id")
+                del pending[purchase_id]
+                save_pending(pending)
+                break
+        if matched_user_id:
+            asyncio.run_coroutine_threadsafe(
+                handle_wrong_amount(matched_user_id, payer_email, txn_id, amount, token, msg_id),
+                bot.loop
+            )
+        else:
+            admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
+            if admin_channel:
+                try:
+                    embed = discord.Embed(
+                        title="⚠️ Wrong Payment Amount",
+                        description=f"**Email:** {payer_email}\n**Amount:** £{amount}\n**TXID:** {txn_id}",
+                        color=discord.Color.red()
+                    )
+                    asyncio.run_coroutine_threadsafe(
+                        admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed),
+                        bot.loop
+                    )
+                except:
+                    pass
+        return f"OK - Wrong amount {amount}", 200
+
+    print("✅ Payment Completed & Amount verified")
+    pending = load_pending()
+    matched_purchase_id = None
+    matched_user_id = None
+    token = None
+    msg_id = None
+
+    for purchase_id, data in pending.items():
+        if data.get("payer_email", "").strip().lower() == payer_email:
+            matched_purchase_id = purchase_id
+            matched_user_id = data.get("user_id")
+            token = data.get("followup_token")
+            msg_id = data.get("followup_msg_id")
+            break
+
+    if matched_purchase_id and matched_user_id:
+        print(f"✅ Found matching email: {payer_email} -> User {matched_user_id}")
+        del pending[matched_purchase_id]
+        save_pending(pending)
+
+        if token and msg_id:
+            embed = progress_embed(50, "💰 Payment Received!", "Your payment has been confirmed.\nWe're now preparing your Virtual Card.", color=discord.Color.blue())
+            asyncio.run_coroutine_threadsafe(edit_followup_embed(token, msg_id, embed), bot.loop)
+
+        asyncio.run_coroutine_threadsafe(dispense_vc(matched_user_id, token, msg_id), bot.loop)
+        return "OK", 200
+    else:
+        print(f"❌ No pending purchase found for email: {payer_email}")
+        admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
+        if admin_channel:
+            try:
+                embed = discord.Embed(
+                    title="⚠️ Unmatched Payment",
+                    description=f"**Email:** {payer_email}\n**Amount:** £{amount}\n**TXID:** {txn_id}",
+                    color=discord.Color.orange()
+                )
+                asyncio.run_coroutine_threadsafe(
+                    admin_channel.send(content=f"📢 <@&{SELLER_ROLE_ID}>", embed=embed),
+                    bot.loop
+                )
+            except:
+                pass
+        return "OK - Unmatched", 200
 
 def run_flask():
     app_flask.run(host="0.0.0.0", port=PORT)
@@ -1314,20 +1310,18 @@ async def on_ready():
     print(f"   Ticket Dropdown Channel: {TICKET_CHANNEL_ID}")
     print(f"   VC Management Panel Channel: {VCPANEL_CHANNEL_ID}")
 
-    # Start background tasks
     bot.loop.create_task(expiry_watcher())
     bot.loop.create_task(timer_updater())
     if INACTIVE_CLOSE_HOURS > 0:
         auto_close_inactive.start()
-        print(f"🔄 Auto-close enabled: {INACTIVE_CLOSE_HOURS} hours inactivity.")
+        print(f"🔄 Auto-close enabled: {INACTIVE_CLOSE_HOURS} hours.")
 
     # Post VC Store
     channel = bot.get_channel(STORE_CHANNEL_ID)
     if channel:
         embed = discord.Embed(
             title="🛍️ Virtual Card Store",
-            description="Click the button below to purchase a Virtual Card for **£1**.\n\n"
-                        "After payment, the card is delivered automatically – no waiting.",
+            description="Click the button below to purchase a Virtual Card for **£1**.\n\nAfter payment, the card is delivered automatically.",
             color=discord.Color.gold()
         )
         embed.set_footer(text="Cards expire 2 hours after delivery.")
@@ -1350,15 +1344,11 @@ async def on_ready():
             print(f"✅ VC Management Panel posted in {panel_channel.name}")
         except Exception as e:
             print(f"❌ Error posting VC Management Panel: {e}")
-    else:
-        print(f"❌ VC Management channel {VCPANEL_CHANNEL_ID} not found.")
 
-    # Post Orderer Toggle Panel (also in VC management channel or a dedicated one)
-    if panel_channel:
+        # Orderer Toggle Panel
         embed = discord.Embed(
             title="🛎️ Orderer Availability",
-            description="Click the buttons below to go online or offline.\n"
-                        "You must have the Orderer role to use this.",
+            description="Click the buttons below to go online or offline.\nYou must have the Orderer role to use this.",
             color=discord.Color.blue()
         )
         try:
@@ -1386,7 +1376,7 @@ async def on_ready():
     print("✅ Bot is fully ready.")
 
 # --------------------------
-# Main runner
+# Main
 # --------------------------
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
